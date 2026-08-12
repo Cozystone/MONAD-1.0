@@ -560,6 +560,8 @@ pub enum GridOp {
     PeriodicFill(u8),
     /// 주기로 폐색을 메운 뒤 그 영역만 반환.
     PeriodicPatch(u8),
+    /// 패널 선택: 0=고유(나머지와 다른 하나), 1=최빈, 2=비배경 최다, 3=비배경 최소.
+    PanelSelect(u8),
     /// 정수 축소: k×k 블록이 균일할 때 대표 셀로 다운스케일.
     ScaleDown(u8),
     /// 1×1 답: 규칙 코드(0=다수색, 1=최대 객체색, 2=유일 색 객체의 색, 3=최소색).
@@ -936,6 +938,38 @@ fn apply_grid_op(g: &Grid, op: GridOp) -> Grid {
                 }
             }
             o
+        }
+        GridOp::PanelSelect(rule) => {
+            let panels = split_panels_any(g);
+            match panels {
+                None => g.clone(),
+                Some(ps) => {
+                    let nz = |p: &Grid| p.cells.iter().filter(|&&c| c != 0).count();
+                    let pick = match rule {
+                        0 => (0..ps.len()).find(|&i| {
+                            (0..ps.len()).all(|j| j == i || ps[j].cells != ps[i].cells)
+                                && (0..ps.len()).filter(|&j| j != i).count() > 0
+                        }),
+                        1 => {
+                            // 최빈: 같은 내용이 가장 많은 그룹의 대표
+                            let mut best: Option<(usize, usize)> = None;
+                            for i in 0..ps.len() {
+                                let n = ps.iter().filter(|q| q.cells == ps[i].cells).count();
+                                if best.map(|(_, bn)| n > bn).unwrap_or(true) {
+                                    best = Some((i, n));
+                                }
+                            }
+                            best.map(|(i, _)| i)
+                        }
+                        2 => (0..ps.len()).max_by_key(|&i| nz(&ps[i])),
+                        _ => (0..ps.len()).min_by_key(|&i| nz(&ps[i])),
+                    };
+                    match pick {
+                        Some(i) => ps[i].clone(),
+                        None => g.clone(),
+                    }
+                }
+            }
         }
         GridOp::PeriodicFill(mark) | GridOp::PeriodicPatch(mark) => {
             let occ = |c: u8| c == mark;
@@ -1321,6 +1355,13 @@ pub fn try_grid_ops(train: &[(Grid, Grid)]) -> Option<GridOp> {
         if ok(GridOp::PeriodicPatch(0)) {
             return Some(GridOp::PeriodicPatch(0));
         }
+        // 패널 선택(원리 축): 고유·최빈·최다·최소
+        for rule in 0..4u8 {
+            let op = GridOp::PanelSelect(rule);
+            if ok(op) {
+                return Some(op);
+            }
+        }
         // 표시색 후보: 입력에 있고 출력에 없는 색(가림막)
         let mut marks: std::collections::BTreeSet<u8> = Default::default();
         for (gi, go) in train {
@@ -1696,6 +1737,67 @@ pub struct PanelCombineN {
     pub vertical: bool,
     pub n: usize,
     pub table: std::collections::HashMap<Vec<u8>, u8>,
+}
+
+/// 임의 개수의 등분 패널(구분선 1~5개, 세로 우선 → 가로) 또는 반분.
+fn split_panels_any(g: &Grid) -> Option<Vec<Grid>> {
+    // 세로 구분선
+    for dir in 0..2 {
+        let (n_major, n_minor) = if dir == 0 { (g.w, g.h) } else { (g.h, g.w) };
+        let at = |i: usize, j: usize| -> u8 {
+            if dir == 0 {
+                g.get(i, j)
+            } else {
+                g.get(j, i)
+            }
+        };
+        let mut divs: Vec<usize> = Vec::new();
+        let mut col: Option<u8> = None;
+        for i in 0..n_major {
+            let c0 = at(i, 0);
+            if c0 != 0 && (0..n_minor).all(|j| at(i, j) == c0) {
+                if col.map(|d| d == c0).unwrap_or(true) {
+                    col = Some(c0);
+                    divs.push(i);
+                }
+            }
+        }
+        if divs.is_empty() || divs.len() > 5 {
+            continue;
+        }
+        let mut bounds: Vec<(usize, usize)> = Vec::new();
+        let mut start = 0usize;
+        for &d in &divs {
+            if d > start {
+                bounds.push((start, d));
+            }
+            start = d + 1;
+        }
+        if start < n_major {
+            bounds.push((start, n_major));
+        }
+        if bounds.len() < 2 {
+            continue;
+        }
+        let w0 = bounds[0].1 - bounds[0].0;
+        if w0 == 0 || bounds.iter().any(|b| b.1 - b.0 != w0) {
+            continue;
+        }
+        let mut out = Vec::new();
+        for (a, b) in bounds {
+            let (pw, ph) = if dir == 0 { (b - a, n_minor) } else { (n_minor, b - a) };
+            let mut p = Grid::new(pw, ph);
+            for y in 0..ph {
+                for x in 0..pw {
+                    let v = if dir == 0 { g.get(a + x, y) } else { g.get(x, a + y) };
+                    p.set(x, y, v);
+                }
+            }
+            out.push(p);
+        }
+        return Some(out);
+    }
+    None
 }
 
 fn split_panels_n(g: &Grid) -> Option<(bool, Vec<Grid>)> {
