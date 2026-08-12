@@ -63,6 +63,55 @@ impl Obj {
     }
 }
 
+/// 연결 성분 분해(conn8=true면 8-이웃 — 대각으로 이어진 덩어리를 하나로).
+pub fn components_conn(g: &Grid, conn8: bool) -> Vec<Obj> {
+    if !conn8 {
+        return components(g);
+    }
+    let mut seen = vec![false; g.w * g.h];
+    let mut out = Vec::new();
+    for sy in 0..g.h {
+        for sx in 0..g.w {
+            let c = g.get(sx, sy);
+            if c == 0 || seen[sy * g.w + sx] {
+                continue;
+            }
+            let mut q = vec![(sx, sy)];
+            seen[sy * g.w + sx] = true;
+            let mut cells = Vec::new();
+            while let Some((x, y)) = q.pop() {
+                cells.push((x, y));
+                for dy in -1i32..=1 {
+                    for dx in -1i32..=1 {
+                        if dx == 0 && dy == 0 {
+                            continue;
+                        }
+                        let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+                        if g.in_bounds(nx, ny) {
+                            let (ux, uy) = (nx as usize, ny as usize);
+                            if !seen[uy * g.w + ux] && g.get(ux, uy) == c {
+                                seen[uy * g.w + ux] = true;
+                                q.push((ux, uy));
+                            }
+                        }
+                    }
+                }
+            }
+            let x0 = cells.iter().map(|p| p.0).min().unwrap();
+            let y0 = cells.iter().map(|p| p.1).min().unwrap();
+            let x1 = cells.iter().map(|p| p.0).max().unwrap();
+            let y1 = cells.iter().map(|p| p.1).max().unwrap();
+            let (w, h) = (x1 - x0 + 1, y1 - y0 + 1);
+            let mut mask = vec![false; w * h];
+            for &(x, y) in &cells {
+                mask[(y - y0) * w + (x - x0)] = true;
+            }
+            out.push(Obj { color: c, x0, y0, w, h, area: cells.len(), mask });
+        }
+    }
+    out
+}
+
 /// 4-이웃 연결 성분 분해(배경 0 제외). 결정론: 스캔 순서 고정.
 pub fn components(g: &Grid) -> Vec<Obj> {
     let mut seen = vec![false; g.w * g.h];
