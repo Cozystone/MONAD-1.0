@@ -2167,6 +2167,29 @@ pub fn loo_score_cfg(train: &[(Grid, Grid)], extra: bool, min_support: u32) -> u
 }
 
 /// LOO로 슬롯 구성을 선택해 학습한다(W2-2 규칙 교차 검증 항목).
+/// 구조적 기계: 기본 해석이 훈련을 정확히 재현하지 못하면 클래스 해석을
+/// 바꿔가며(모호성 탐색) 훈련을 닫는 해석을 찾는다. anytime 예산의 학습측 투입.
+pub fn learn_best(train: &[(Grid, Grid)]) -> Libs {
+    let base = learn_validated(train);
+    if train.iter().all(|(i, o)| apply(i, &base) == *o) {
+        return base;
+    }
+    let classes = [
+        C_TRANS, C_MIR_H, C_MIR_V, C_GRAV, C_AT_MARKER, C_AT_MARKER_AREA,
+        C_ROT180_OBJ, C_DILATE, C_ERODE, C_RAY, C_RAY_BAND, C_MARK_FLOOR,
+        C_MARK_REL, C_FILL, C_OUTLINE,
+    ];
+    for &fc in classes.iter() {
+        for &ex in [false, true].iter() {
+            let cand = learn_forced(train, ex, 4, Some(fc));
+            if train.iter().all(|(i, o)| apply(i, &cand) == *o) {
+                return cand;
+            }
+        }
+    }
+    base
+}
+
 pub fn learn_validated(train: &[(Grid, Grid)]) -> Libs {
     // anytime 구성 탐색: (확장 슬롯, 지지 문턱) 4조합을 LOO로 채점.
     // 동점이면 단순한 구성(기본 슬롯·높은 문턱)을 택한다 — 오컴의 면도날.
@@ -2192,6 +2215,16 @@ pub fn learn_with(train: &[(Grid, Grid)], extra: bool) -> Libs {
 
 /// LOO 구성 탐색용: 확장 슬롯·지지 문턱을 함께 지정한다.
 pub fn learn_cfg(train: &[(Grid, Grid)], extra: bool, min_support: u32) -> Libs {
+    learn_forced(train, extra, min_support, None)
+}
+
+/// 모호성 탐색용: 전역 일관성 투표의 결과를 지정 클래스로 강제한다.
+pub fn learn_forced(
+    train: &[(Grid, Grid)],
+    extra: bool,
+    min_support: u32,
+    forced: Option<u32>,
+) -> Libs {
     struct Row {
         pair: usize,
         ii: usize,
@@ -2242,7 +2275,13 @@ pub fn learn_cfg(train: &[(Grid, Grid)], extra: bool, min_support: u32) -> Libs 
             .collect();
         !moving.is_empty() && ds.len() == moving.len() && ds.windows(2).all(|w| w[0] == w[1])
     };
-    let chosen_uniform: Option<u32> = if moving.is_empty() {
+    let chosen_uniform: Option<u32> = if let Some(fc) = forced {
+        if moving.iter().any(|r| r.cands.iter().any(|c| c.0 == fc)) {
+            Some(fc)
+        } else {
+            None
+        }
+    } else if moving.is_empty() {
         None
     } else if const_trans {
         Some(C_TRANS)
