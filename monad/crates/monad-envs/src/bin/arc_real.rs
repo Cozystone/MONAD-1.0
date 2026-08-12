@@ -179,7 +179,7 @@ fn main() {
         // 풀 사전분포(W2-2 라이브러리의 본 시험): 다른 과제에서 배운 규칙을 이식해
         // 훈련이 정확해지면 채택 — 과제 간 전이의 첫 실전 경로.
         let all_ok = all_ok
-            || (!pool.is_empty() && {
+            || (ablate != "pool" && !pool.is_empty() && {
                 let train_exact = train.iter().all(|(i, o)| apply(i, &libs) == *o);
                 !train_exact
                     && pool.iter().any(|(cons, eff)| {
