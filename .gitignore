@@ -1,0 +1,9 @@
+# 빌드 산출물
+monad/target/
+
+# 외부 데이터셋(공개 소스에서 재취득: github.com/fchollet/ARC-AGI)
+data/
+
+# 로컬 부산물
+*.tmp
+det_run_*.txt
