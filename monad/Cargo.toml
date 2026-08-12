@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = ["crates/monad-core", "crates/monad-envs"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "MIT"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+# 벤치용: release와 동일하되 panic=unwind (테스트 호환)
+[profile.bench]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

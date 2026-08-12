@@ -1,0 +1,359 @@
+{
+  "verdict": "PASS",
+  "best_method": "lgg",
+  "best_rate": 0.75,
+  "n_train": 1500,
+  "seed": 1,
+  "results": [
+    {
+      "world": "R1",
+      "method": "mdl-greedy",
+      "accuracy": 1.0,
+      "slots_found": [
+        "surf.rigid"
+      ],
+      "slots_truth": [
+        "surf.rigid"
+      ],
+      "slots_ok": true,
+      "passed": true,
+      "n_rules": 1,
+      "n_candidates": 130,
+      "seconds": 0.012543800054118037,
+      "rules": [
+        "surf.rigid=False → pass",
+        "(그 외) → reverse"
+      ]
+    },
+    {
+      "world": "R2",
+      "method": "mdl-greedy",
+      "accuracy": 1.0,
+      "slots_found": [
+        "obj.moving",
+        "surf.rigid"
+      ],
+      "slots_truth": [
+        "obj.moving",
+        "surf.rigid"
+      ],
+      "slots_ok": true,
+      "passed": true,
+      "n_rules": 2,
+      "n_candidates": 130,
+      "seconds": 0.01234909996856004,
+      "rules": [
+        "surf.rigid=False → nothing",
+        "obj.moving=True → reverse",
+        "(그 외) → nothing"
+      ]
+    },
+    {
+      "world": "R3",
+      "method": "mdl-greedy",
+      "accuracy": 0.973,
+      "slots_found": [
+        "obj.moving",
+        "obj.tag",
+        "surf.rigid"
+      ],
+      "slots_truth": [
+        "obj.moving",
+        "surf.rigid"
+      ],
+      "slots_ok": false,
+      "passed": false,
+      "n_rules": 3,
+      "n_candidates": 192,
+      "seconds": 0.020804199972189963,
+      "rules": [
+        "obj.moving=True ∧ obj.tag=t0 ∧ surf.rigid=True → reverse",
+        "obj.tag=t0 → nothing",
+        "obj.moving==surf.rigid → reverse",
+        "(그 외) → nothing"
+      ]
+    },
+    {
+      "world": "R4",
+      "method": "mdl-greedy",
+      "accuracy": 1.0,
+      "slots_found": [
+        "obj.color",
+        "surf.color"
+      ],
+      "slots_truth": [
+        "obj.color",
+        "surf.color"
+      ],
+      "slots_ok": true,
+      "passed": true,
+      "n_rules": 1,
+      "n_candidates": 130,
+      "seconds": 0.009643999976105988,
+      "rules": [
+        "obj.color==surf.color → camouflage",
+        "(그 외) → reverse"
+      ]
+    },
+    {
+      "world": "R5",
+      "method": "mdl-greedy",
+      "accuracy": 1.0,
+      "slots_found": [
+        "obj.speed"
+      ],
+      "slots_truth": [
+        "obj.speed"
+      ],
+      "slots_ok": true,
+      "passed": true,
+      "n_rules": 1,
+      "n_candidates": 84,
+      "seconds": 0.006797900074161589,
+      "rules": [
+        "obj.speed≥7.00 → shatter",
+        "(그 외) → reverse"
+      ]
+    },
+    {
+      "world": "R6",
+      "method": "mdl-greedy",
+      "accuracy": 1.0,
+      "slots_found": [
+        "obj.material",
+        "surf.rigid"
+      ],
+      "slots_truth": [
+        "obj.material",
+        "surf.rigid"
+      ],
+      "slots_ok": true,
+      "passed": true,
+      "n_rules": 2,
+      "n_candidates": 130,
+      "seconds": 0.011509999982081354,
+      "rules": [
+        "surf.rigid=False → pass",
+        "obj.material=glass → shatter",
+        "(그 외) → reverse"
+      ]
+    },
+    {
+      "world": "R7",
+      "method": "mdl-greedy",
+      "accuracy": 0.941,
+      "slots_found": [
+        "obj.material",
+        "obj.moving",
+        "surf.rigid"
+      ],
+      "slots_truth": [
+        "obj.material",
+        "obj.moving",
+        "surf.rigid"
+      ],
+      "slots_ok": true,
+      "passed": false,
+      "n_rules": 3,
+      "n_candidates": 130,
+      "seconds": 0.013116899994201958,
+      "rules": [
+        "obj.material=glass ∧ obj.moving=True → shatter",
+        "surf.rigid=False → nothing",
+        "obj.moving=True → reverse",
+        "(그 외) → nothing"
+      ]
+    },
+    {
+      "world": "R8",
+      "method": "mdl-greedy",
+      "accuracy": 0.746,
+      "slots_found": [
+        "obj.moving",
+        "surf.rigid"
+      ],
+      "slots_truth": [
+        "obj.moving",
+        "surf.rigid"
+      ],
+      "slots_ok": true,
+      "passed": false,
+      "n_rules": 1,
+      "n_candidates": 130,
+      "seconds": 0.01160389999859035,
+      "rules": [
+        "obj.moving==surf.rigid → reverse",
+        "(그 외) → nothing"
+      ]
+    },
+    {
+      "world": "R1",
+      "method": "lgg",
+      "accuracy": 1.0,
+      "slots_found": [
+        "surf.rigid"
+      ],
+      "slots_truth": [
+        "surf.rigid"
+      ],
+      "slots_ok": true,
+      "passed": true,
+      "n_rules": 1,
+      "n_candidates": 130,
+      "seconds": 0.008635599981062114,
+      "rules": [
+        "surf.rigid=False → pass",
+        "(그 외) → reverse"
+      ]
+    },
+    {
+      "world": "R2",
+      "method": "lgg",
+      "accuracy": 1.0,
+      "slots_found": [
+        "obj.moving",
+        "surf.rigid"
+      ],
+      "slots_truth": [
+        "obj.moving",
+        "surf.rigid"
+      ],
+      "slots_ok": true,
+      "passed": true,
+      "n_rules": 1,
+      "n_candidates": 130,
+      "seconds": 0.008807800011709332,
+      "rules": [
+        "obj.moving=True ∧ surf.rigid=True ∧ obj.moving==surf.rigid → reverse",
+        "(그 외) → nothing"
+      ]
+    },
+    {
+      "world": "R3",
+      "method": "lgg",
+      "accuracy": 1.0,
+      "slots_found": [
+        "obj.moving",
+        "surf.rigid"
+      ],
+      "slots_truth": [
+        "obj.moving",
+        "surf.rigid"
+      ],
+      "slots_ok": true,
+      "passed": true,
+      "n_rules": 1,
+      "n_candidates": 192,
+      "seconds": 0.013460900052450597,
+      "rules": [
+        "obj.moving=True ∧ surf.rigid=True ∧ obj.moving==surf.rigid → reverse",
+        "(그 외) → nothing"
+      ]
+    },
+    {
+      "world": "R4",
+      "method": "lgg",
+      "accuracy": 1.0,
+      "slots_found": [
+        "obj.color",
+        "surf.color"
+      ],
+      "slots_truth": [
+        "obj.color",
+        "surf.color"
+      ],
+      "slots_ok": true,
+      "passed": true,
+      "n_rules": 1,
+      "n_candidates": 130,
+      "seconds": 0.008365000016056001,
+      "rules": [
+        "obj.color==surf.color → camouflage",
+        "(그 외) → reverse"
+      ]
+    },
+    {
+      "world": "R5",
+      "method": "lgg",
+      "accuracy": 0.572,
+      "slots_found": [],
+      "slots_truth": [
+        "obj.speed"
+      ],
+      "slots_ok": false,
+      "passed": false,
+      "n_rules": 0,
+      "n_candidates": 84,
+      "seconds": 0.005779600003734231,
+      "rules": [
+        "(그 외) → reverse"
+      ]
+    },
+    {
+      "world": "R6",
+      "method": "lgg",
+      "accuracy": 1.0,
+      "slots_found": [
+        "obj.material",
+        "surf.rigid"
+      ],
+      "slots_truth": [
+        "obj.material",
+        "surf.rigid"
+      ],
+      "slots_ok": true,
+      "passed": true,
+      "n_rules": 2,
+      "n_candidates": 130,
+      "seconds": 0.008978900033980608,
+      "rules": [
+        "obj.material=glass ∧ surf.rigid=True → shatter",
+        "surf.rigid=False → pass",
+        "(그 외) → reverse"
+      ]
+    },
+    {
+      "world": "R7",
+      "method": "lgg",
+      "accuracy": 1.0,
+      "slots_found": [
+        "obj.material",
+        "obj.moving",
+        "surf.rigid"
+      ],
+      "slots_truth": [
+        "obj.material",
+        "obj.moving",
+        "surf.rigid"
+      ],
+      "slots_ok": true,
+      "passed": true,
+      "n_rules": 2,
+      "n_candidates": 130,
+      "seconds": 0.7854140000417829,
+      "rules": [
+        "obj.material=glass ∧ obj.moving=True ∧ surf.rigid=True ∧ obj.moving==surf.rigid → shatter",
+        "obj.moving=True ∧ surf.rigid=True ∧ obj.moving==surf.rigid → reverse",
+        "(그 외) → nothing"
+      ]
+    },
+    {
+      "world": "R8",
+      "method": "lgg",
+      "accuracy": 0.758,
+      "slots_found": [],
+      "slots_truth": [
+        "obj.moving",
+        "surf.rigid"
+      ],
+      "slots_ok": false,
+      "passed": false,
+      "n_rules": 0,
+      "n_candidates": 130,
+      "seconds": 0.007833700045011938,
+      "rules": [
+        "(그 외) → nothing"
+      ]
+    }
+  ]
+}

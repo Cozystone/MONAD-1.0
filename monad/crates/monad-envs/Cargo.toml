@@ -1,0 +1,42 @@
+[package]
+name = "monad-envs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "MONAD test environments: aliasing maze, Bounce Test, arcade"
+
+[dependencies]
+monad-core = { path = "../monad-core" }
+
+[[bin]]
+name = "maze-test"
+path = "src/bin/maze_test.rs"
+
+[[bin]]
+name = "bounce-test"
+path = "src/bin/bounce_test.rs"
+
+[[bin]]
+name = "pong-test"
+path = "src/bin/pong_test.rs"
+
+[[bin]]
+name = "revise-test"
+path = "src/bin/revise_test.rs"
+
+[[bin]]
+name = "continual-test"
+path = "src/bin/continual_test.rs"
+
+[[bin]]
+name = "continual-full"
+path = "src/bin/continual_full.rs"
+
+[[bin]]
+name = "arc-spike"
+path = "src/bin/arc_spike.rs"
+
+[[bin]]
+name = "arc-real"
+path = "src/bin/arc_real.rs"

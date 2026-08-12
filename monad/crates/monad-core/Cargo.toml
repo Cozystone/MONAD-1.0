@@ -1,0 +1,18 @@
+[package]
+name = "monad-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "MONAD cognitive runtime core: cognitive atoms, sparse block hypervectors, clone world graph"
+
+# 의존성 0 원칙 — 저사양/오프라인 구동이 제품 전제이므로 코어는 std만 사용한다.
+[dependencies]
+
+[[bin]]
+name = "bench-sbv"
+path = "src/bin/bench_sbv.rs"
+
+[[bin]]
+name = "bench-store"
+path = "src/bin/bench_store.rs"
