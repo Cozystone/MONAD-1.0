@@ -62,11 +62,13 @@ pub const C_ERODE: u32 = 14;
 pub const C_RAY_BAND: u32 = 15;
 /// 표식 복제(면적 기반): param1=표식 면적 — 색 무관 "모든 1셀 자리에 사본" 류.
 pub const C_AT_MARKER_AREA: u32 = 16;
+/// 객체 내 색 교환: 그 객체가 가진 두 색을 맞바꾼다(다색 표현 전용 어휘).
+pub const C_COLORSWAP: u32 = 17;
 
-pub const CLASS_NAMES: [&str; 17] = [
+pub const CLASS_NAMES: [&str; 18] = [
     "stay", "translate", "mirror_h", "mirror_v", "gravity", "delete", "outline",
     "at_marker", "fill", "ray", "mark_floor", "mark_rel", "rot180", "dilate", "erode",
-    "ray_band", "at_marker_area",
+    "ray_band", "at_marker_area", "colorswap",
 ];
 
 /// 1링 팽창 마스크(bbox +2, 4-이웃).
@@ -208,6 +210,50 @@ fn candidates(g_in: &Grid, ins: &[Obj], ii: usize, oo: &Obj) -> Vec<(u32, i32, i
         return out;
     }
     if same_mask && dx == 0 && dy == 0 {
+        // 다색 표현에서: 제자리인데 색 배열이 두 색의 교환이면 색 교환 연산.
+        // 가드(시도 119의 −5 회귀 교훈): **객체가 실제로 2색 이상**일 때만 —
+        // 단색 객체의 전역 재색칠은 색 lib의 몫이며, 여기서 가로채면 손해다.
+        let io_multi = {
+            let mut cs: Vec<u8> = io
+                .colors
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| io.mask[*i])
+                .map(|(_, &c)| c)
+                .collect();
+            cs.sort_unstable();
+            cs.dedup();
+            cs.len() >= 2
+        };
+        if io_multi
+            && io.colors.len() == io.mask.len()
+            && oo.colors.len() == oo.mask.len()
+            && io.colors != oo.colors
+        {
+            let mut pair: Option<(u8, u8)> = None;
+            let mut consistent = true;
+            for i in 0..io.colors.len() {
+                if !io.mask[i] {
+                    continue;
+                }
+                let (a, b) = (io.colors[i], oo.colors[i]);
+                if a == b {
+                    continue;
+                }
+                match pair {
+                    None => pair = Some((a.min(b), a.max(b))),
+                    Some((p, q)) => {
+                        if !((a == p && b == q) || (a == q && b == p)) {
+                            consistent = false;
+                        }
+                    }
+                }
+            }
+            if consistent && pair.is_some() {
+                out.push((C_COLORSWAP, 0, 0));
+                return out;
+            }
+        }
         out.push((C_STAY, 0, 0));
         return out;
     }
@@ -2665,6 +2711,30 @@ pub fn apply(gi: &Grid, libs: &Libs) -> Grid {
                 C_ERODE => {
                     let m = Obj { mask: erode_mask(io), ..io.clone() };
                     stamp(&mut out, &m, io.x0, io.y0, color);
+                }
+                C_COLORSWAP => {
+                    // 객체가 가진 두 색을 맞바꿔 찍는다
+                    let mut present: Vec<u8> = io
+                        .colors
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| io.mask[*i])
+                        .map(|(_, &c)| c)
+                        .collect();
+                    present.sort_unstable();
+                    present.dedup();
+                    if present.len() == 2 {
+                        let (a, b) = (present[0], present[1]);
+                        let swapped: Vec<u8> = io
+                            .colors
+                            .iter()
+                            .map(|&c| if c == a { b } else if c == b { a } else { c })
+                            .collect();
+                        let m = Obj { colors: swapped, ..io.clone() };
+                        crate::grid::stamp_colors(&mut out, &m, io.x0, io.y0);
+                    } else {
+                        crate::grid::stamp_colors(&mut out, io, io.x0, io.y0);
+                    }
                 }
                 C_MARK_FLOOR => {
                     let cx = io.x0 + io.w / 2;
