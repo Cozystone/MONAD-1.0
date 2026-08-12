@@ -566,6 +566,10 @@ pub enum GridOp {
     PanelSummary(u8),
     /// 프랙탈 자기합성: 비배경(invert면 배경) 셀 자리마다 입력 자신을 찍는다.
     Fractal(bool),
+    /// 프랙탈 재색: 사본을 그 셀의 색으로 칠한다(색 정보까지 전파).
+    FractalRecolor,
+    /// 객체 수준 대칭 복원: 각 객체의 bbox 안에서 H·V·180 대칭으로 자기를 메운다.
+    ObjSymFill,
     /// 정수 축소: k×k 블록이 균일할 때 대표 셀로 다운스케일.
     ScaleDown(u8),
     /// 1×1 답: 규칙 코드(0=다수색, 1=최대 객체색, 2=유일 색 객체의 색, 3=최소색).
@@ -960,6 +964,60 @@ fn apply_grid_op(g: &Grid, op: GridOp) -> Grid {
             }
             o
         }
+        GridOp::ObjSymFill => {
+            let mut o = g.clone();
+            for obj in components(g) {
+                // bbox 안에서 자기 대칭(H·V·180)으로 빈 칸을 메운다
+                for _ in 0..4 {
+                    let mut changed = false;
+                    for dy in 0..obj.h {
+                        for dx in 0..obj.w {
+                            let (x, y) = (obj.x0 + dx, obj.y0 + dy);
+                            if o.get(x, y) != 0 {
+                                continue;
+                            }
+                            let mut v = o.get(obj.x0 + (obj.w - 1 - dx), y);
+                            if v == 0 {
+                                v = o.get(x, obj.y0 + (obj.h - 1 - dy));
+                            }
+                            if v == 0 {
+                                v = o.get(
+                                    obj.x0 + (obj.w - 1 - dx),
+                                    obj.y0 + (obj.h - 1 - dy),
+                                );
+                            }
+                            if v != 0 {
+                                o.set(x, y, v);
+                                changed = true;
+                            }
+                        }
+                    }
+                    if !changed {
+                        break;
+                    }
+                }
+            }
+            o
+        }
+        GridOp::FractalRecolor => {
+            let mut o = Grid::new(g.w * g.w, g.h * g.h);
+            for by in 0..g.h {
+                for bx in 0..g.w {
+                    let c = g.get(bx, by);
+                    if c == 0 {
+                        continue;
+                    }
+                    for y in 0..g.h {
+                        for x in 0..g.w {
+                            if g.get(x, y) != 0 {
+                                o.set(bx * g.w + x, by * g.h + y, c);
+                            }
+                        }
+                    }
+                }
+            }
+            o
+        }
         GridOp::PanelSummary(rule) => match split_grid_cells(g) {
             None => g.clone(),
             Some((rows, cols, ps)) => {
@@ -1253,6 +1311,9 @@ pub fn try_grid_ops(train: &[(Grid, Grid)]) -> Option<GridOp> {
     if ok(GridOp::DiagRaysX) {
         return Some(GridOp::DiagRaysX);
     }
+    if ok(GridOp::ObjSymFill) {
+        return Some(GridOp::ObjSymFill);
+    }
     for op in [
         GridOp::SymFillH,
         GridOp::SymFillV,
@@ -1364,6 +1425,9 @@ pub fn try_grid_ops(train: &[(Grid, Grid)]) -> Option<GridOp> {
                     if ok(GridOp::Fractal(inv)) {
                         return Some(GridOp::Fractal(inv));
                     }
+                }
+                if ok(GridOp::FractalRecolor) {
+                    return Some(GridOp::FractalRecolor);
                 }
             }
         }
@@ -2078,6 +2142,11 @@ pub fn try_norm_then_objects(train: &[(Grid, Grid)]) -> Option<(GridOp, Libs)> {
 /// 훈련쌍 하나를 빼고 배운 규칙이 그 쌍을 정확히 맞히는 비율로 구성을 채점하고,
 /// 더 일반화하는 슬롯 집합을 고른다(동점이면 단순한 기본 슬롯).
 pub fn loo_score(train: &[(Grid, Grid)], extra: bool) -> usize {
+    loo_score_cfg(train, extra, 4)
+}
+
+/// 구성별 LOO 점수(확장 슬롯 × 지지 문턱).
+pub fn loo_score_cfg(train: &[(Grid, Grid)], extra: bool, min_support: u32) -> usize {
     if train.len() < 2 {
         return 0;
     }
@@ -2089,7 +2158,7 @@ pub fn loo_score(train: &[(Grid, Grid)], extra: bool) -> usize {
             .filter(|(j, _)| *j != i)
             .map(|(_, p)| p.clone())
             .collect();
-        let libs = learn_with(&rest, extra);
+        let libs = learn_cfg(&rest, extra, min_support);
         if apply(&train[i].0, &libs) == train[i].1 {
             hits += 1;
         }
@@ -2099,9 +2168,17 @@ pub fn loo_score(train: &[(Grid, Grid)], extra: bool) -> usize {
 
 /// LOO로 슬롯 구성을 선택해 학습한다(W2-2 규칙 교차 검증 항목).
 pub fn learn_validated(train: &[(Grid, Grid)]) -> Libs {
-    let base = loo_score(train, false);
-    let ext = loo_score(train, true);
-    learn_with(train, ext > base)
+    // anytime 구성 탐색: (확장 슬롯, 지지 문턱) 4조합을 LOO로 채점.
+    // 동점이면 단순한 구성(기본 슬롯·높은 문턱)을 택한다 — 오컴의 면도날.
+    let cands = [(false, 4u32), (true, 4), (false, 2), (true, 2)];
+    let mut best = (0usize, false, 4u32);
+    for (i, &(ex, ms)) in cands.iter().enumerate() {
+        let sc = loo_score_cfg(train, ex, ms);
+        if i == 0 || sc > best.0 {
+            best = (sc, ex, ms);
+        }
+    }
+    learn_cfg(train, best.1, best.2)
 }
 
 pub fn learn(train: &[(Grid, Grid)]) -> Libs {
@@ -2110,6 +2187,11 @@ pub fn learn(train: &[(Grid, Grid)]) -> Libs {
 
 /// 교차 검증(LOO) 선택용: 확장 슬롯 on/off를 지정해 학습한다.
 pub fn learn_with(train: &[(Grid, Grid)], extra: bool) -> Libs {
+    learn_cfg(train, extra, 4)
+}
+
+/// LOO 구성 탐색용: 확장 슬롯·지지 문턱을 함께 지정한다.
+pub fn learn_cfg(train: &[(Grid, Grid)], extra: bool, min_support: u32) -> Libs {
     struct Row {
         pair: usize,
         ii: usize,
@@ -2234,7 +2316,7 @@ pub fn learn_with(train: &[(Grid, Grid)], extra: bool) -> Libs {
         }
         v
     };
-    let cfg = InduceConfig { min_support: 4, ..Default::default() };
+    let cfg = InduceConfig { min_support, ..Default::default() };
     let trim = |mut l: SchemaLib| -> SchemaLib {
         l.schemas.retain(|s| s.confidence() >= 0.5);
         l
