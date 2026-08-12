@@ -550,6 +550,8 @@ pub enum GridOp {
     PeriodicRepair(u8, u8),
     /// 잇기: 행/열 정렬된 같은 색 객체 쌍 사이를 그 색 선으로 연결(배경 위만).
     ConnectPairs,
+    /// 대칭 복원 완전형: H·V·180·전치 대칭을 고정점까지 반복해 배경을 메움.
+    SymFillAll,
     /// 정수 축소: k×k 블록이 균일할 때 대표 셀로 다운스케일.
     ScaleDown(u8),
     /// 1×1 답: 규칙 코드(0=다수색, 1=최대 객체색, 2=유일 색 객체의 색, 3=최소색).
@@ -896,6 +898,37 @@ fn apply_grid_op(g: &Grid, op: GridOp) -> Grid {
             }
             o
         }
+        GridOp::SymFillAll => {
+            let mut o = g.clone();
+            for _ in 0..8 {
+                let before = o.cells.clone();
+                for y in 0..o.h {
+                    for x in 0..o.w {
+                        if o.get(x, y) != 0 {
+                            continue;
+                        }
+                        // 후보 대칭 짝들: 수평·수직·180°·전치(정사각일 때)
+                        let mut v = o.get(o.w - 1 - x, y);
+                        if v == 0 {
+                            v = o.get(x, o.h - 1 - y);
+                        }
+                        if v == 0 {
+                            v = o.get(o.w - 1 - x, o.h - 1 - y);
+                        }
+                        if v == 0 && o.w == o.h {
+                            v = o.get(y, x);
+                        }
+                        if v != 0 {
+                            o.set(x, y, v);
+                        }
+                    }
+                }
+                if o.cells == before {
+                    break;
+                }
+            }
+            o
+        }
         GridOp::ConnectPairs => {
             let mut o = g.clone();
             let objs = components(g);
@@ -1005,6 +1038,7 @@ pub fn try_grid_ops(train: &[(Grid, Grid)]) -> Option<GridOp> {
     for op in [
         GridOp::SymFillH,
         GridOp::SymFillV,
+        GridOp::SymFillAll,
         GridOp::Rot90,
         GridOp::Rot180,
         GridOp::Rot270,
@@ -1157,6 +1191,7 @@ pub fn try_grid_chain(train: &[(Grid, Grid)]) -> Option<(GridOp, Option<GridOp>)
         GridOp::ExtractFrameInterior,
         GridOp::SymFillH,
         GridOp::SymFillV,
+        GridOp::SymFillAll,
         GridOp::Rot90,
         GridOp::Rot180,
         GridOp::Transpose,
