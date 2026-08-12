@@ -564,6 +564,8 @@ pub enum GridOp {
     PanelSelect(u8),
     /// 패널 요약: 2차원 패널 격자를 패널당 한 셀로 축약(0=대표색, 1=비었나 채웠나).
     PanelSummary(u8),
+    /// 프랙탈 자기합성: 비배경(invert면 배경) 셀 자리마다 입력 자신을 찍는다.
+    Fractal(bool),
     /// 정수 축소: k×k 블록이 균일할 때 대표 셀로 다운스케일.
     ScaleDown(u8),
     /// 1×1 답: 규칙 코드(0=다수색, 1=최대 객체색, 2=유일 색 객체의 색, 3=최소색).
@@ -937,6 +939,23 @@ fn apply_grid_op(g: &Grid, op: GridOp) -> Grid {
                 }
                 if o.cells == before {
                     break;
+                }
+            }
+            o
+        }
+        GridOp::Fractal(invert) => {
+            let mut o = Grid::new(g.w * g.w, g.h * g.h);
+            for by in 0..g.h {
+                for bx in 0..g.w {
+                    let on = if invert { g.get(bx, by) == 0 } else { g.get(bx, by) != 0 };
+                    if !on {
+                        continue;
+                    }
+                    for y in 0..g.h {
+                        for x in 0..g.w {
+                            o.set(bx * g.w + x, by * g.h + y, g.get(x, y));
+                        }
+                    }
                 }
             }
             o
@@ -1338,6 +1357,14 @@ pub fn try_grid_ops(train: &[(Grid, Grid)]) -> Option<GridOp> {
             }
             if nx * ny > 1 && nx <= 4 && ny <= 4 && ok(GridOp::Tile(nx as u8, ny as u8)) {
                 return Some(GridOp::Tile(nx as u8, ny as u8));
+            }
+            // 프랙탈: 출력이 입력의 (w×w, h×h)일 때 자기합성 가설
+            if go0.w == gi0.w * gi0.w && go0.h == gi0.h * gi0.h {
+                for inv in [false, true] {
+                    if ok(GridOp::Fractal(inv)) {
+                        return Some(GridOp::Fractal(inv));
+                    }
+                }
             }
         }
     }
