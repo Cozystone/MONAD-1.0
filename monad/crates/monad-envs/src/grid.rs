@@ -47,6 +47,8 @@ pub struct Obj {
     pub h: usize,
     /// bbox 기준 상대 마스크(행 우선).
     pub mask: Vec<bool>,
+    /// 셀별 색(다색 객체용, 길이 = mask). 단색이면 전부 color.
+    pub colors: Vec<u8>,
     pub area: usize,
 }
 
@@ -60,6 +62,78 @@ impl Obj {
             h = h.wrapping_mul(0x100000001b3) ^ (b as u64 + 1);
         }
         h
+    }
+}
+
+/// 다색 연결 성분: 배경이 아닌 셀들을 색 무관하게 잇는다(셀별 색 보존).
+pub fn components_multi(g: &Grid, conn8: bool, bg: u8) -> Vec<Obj> {
+    let mut seen = vec![false; g.w * g.h];
+    let mut out = Vec::new();
+    for sy in 0..g.h {
+        for sx in 0..g.w {
+            if g.get(sx, sy) == bg || seen[sy * g.w + sx] {
+                continue;
+            }
+            let mut q = vec![(sx, sy)];
+            seen[sy * g.w + sx] = true;
+            let mut cells = Vec::new();
+            while let Some((x, y)) = q.pop() {
+                cells.push((x, y));
+                for dy in -1i32..=1 {
+                    for dx in -1i32..=1 {
+                        if dx == 0 && dy == 0 {
+                            continue;
+                        }
+                        if !conn8 && dx != 0 && dy != 0 {
+                            continue;
+                        }
+                        let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+                        if g.in_bounds(nx, ny) {
+                            let (ux, uy) = (nx as usize, ny as usize);
+                            if !seen[uy * g.w + ux] && g.get(ux, uy) != bg {
+                                seen[uy * g.w + ux] = true;
+                                q.push((ux, uy));
+                            }
+                        }
+                    }
+                }
+            }
+            let x0 = cells.iter().map(|p| p.0).min().unwrap();
+            let y0 = cells.iter().map(|p| p.1).min().unwrap();
+            let x1 = cells.iter().map(|p| p.0).max().unwrap();
+            let y1 = cells.iter().map(|p| p.1).max().unwrap();
+            let (w, h) = (x1 - x0 + 1, y1 - y0 + 1);
+            let mut mask = vec![false; w * h];
+            let mut colors = vec![0u8; w * h];
+            let mut cnt = [0usize; 10];
+            for &(x, y) in &cells {
+                let i = (y - y0) * w + (x - x0);
+                mask[i] = true;
+                colors[i] = g.get(x, y);
+                cnt[g.get(x, y) as usize] += 1;
+            }
+            let dom = (0..10).max_by_key(|&k| cnt[k]).unwrap_or(0) as u8;
+            out.push(Obj { color: dom, x0, y0, w, h, area: cells.len(), mask, colors });
+        }
+    }
+    out
+}
+
+/// 셀별 색으로 찍는다(다색 객체). 색 배열이 어긋나면 단색으로 대체.
+pub fn stamp_colors(g: &mut Grid, o: &Obj, x0: usize, y0: usize) {
+    let use_colors = o.colors.len() == o.mask.len();
+    for dy in 0..o.h {
+        for dx in 0..o.w {
+            let i = dy * o.w + dx;
+            if !o.mask[i] {
+                continue;
+            }
+            let (x, y) = (x0 + dx, y0 + dy);
+            if x < g.w && y < g.h {
+                let c = if use_colors { o.colors[i] } else { o.color };
+                g.set(x, y, c);
+            }
+        }
     }
 }
 
@@ -124,7 +198,8 @@ pub fn components_conn(g: &Grid, conn8: bool) -> Vec<Obj> {
             for &(x, y) in &cells {
                 mask[(y - y0) * w + (x - x0)] = true;
             }
-            out.push(Obj { color: c, x0, y0, w, h, area: cells.len(), mask });
+            let colors: Vec<u8> = mask.iter().map(|&b| if b { c } else { 0 }).collect();
+            out.push(Obj { color: c, x0, y0, w, h, area: cells.len(), mask, colors });
         }
     }
     out
@@ -171,7 +246,8 @@ pub fn components(g: &Grid) -> Vec<Obj> {
             for &(x, y) in &cells {
                 mask[(y - y0) * w + (x - x0)] = true;
             }
-            out.push(Obj { color: c, x0, y0, w, h, area: cells.len(), mask });
+            let colors: Vec<u8> = mask.iter().map(|&b| if b { c } else { 0 }).collect();
+            out.push(Obj { color: c, x0, y0, w, h, area: cells.len(), mask, colors });
         }
     }
     out

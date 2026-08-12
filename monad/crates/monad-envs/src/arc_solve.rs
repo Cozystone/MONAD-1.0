@@ -521,6 +521,8 @@ pub struct Libs {
     pub conn8: bool,
     /// 배경으로 취급한 색(0이면 기존 가정).
     pub bg: u8,
+    /// 다색 객체 분해로 학습되었는가.
+    pub multi: bool,
 }
 
 /// 격자 수준 연산 — 객체 분해로는 안 보이는 전역 구조(대각 벽의 갇힌 영역 등).
@@ -2152,6 +2154,33 @@ pub fn loo_score(train: &[(Grid, Grid)], extra: bool) -> usize {
 /// 구성별 LOO 점수(확장 슬롯 × 지지 문턱).
 /// 분해 방식까지 포함한 LOO 채점.
 /// 배경색까지 포함한 LOO 채점.
+/// 다색 축까지 포함한 LOO 채점.
+pub fn loo_score_full(
+    train: &[(Grid, Grid)],
+    extra: bool,
+    conn8: bool,
+    bg: u8,
+    multi: bool,
+) -> usize {
+    if train.len() < 2 {
+        return 0;
+    }
+    let mut hits = 0usize;
+    for i in 0..train.len() {
+        let rest: Vec<(Grid, Grid)> = train
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != i)
+            .map(|(_, p)| p.clone())
+            .collect();
+        let libs = learn_full(&rest, extra, 4, None, conn8, bg, multi);
+        if apply(&train[i].0, &libs) == train[i].1 {
+            hits += 1;
+        }
+    }
+    hits
+}
+
 pub fn loo_score_bg(train: &[(Grid, Grid)], extra: bool, conn8: bool, bg: u8) -> usize {
     if train.len() < 2 {
         return 0;
@@ -2250,19 +2279,27 @@ pub fn learn_validated(train: &[(Grid, Grid)]) -> Libs {
         (0..10).max_by_key(|&i| cnt[i]).unwrap_or(0) as u8
     };
     let bgs: Vec<u8> = if dom != 0 { vec![0, dom] } else { vec![0] };
+    // 다색 분해가 단색 분해와 다른 객체 수를 낼 때만 후보에 추가(비용 절약)
+    let multi_useful = train.iter().any(|(gi, _)| {
+        crate::grid::components_multi(gi, false, 0).len()
+            != crate::grid::components_bg(gi, false, 0).len()
+    });
+    let multis: Vec<bool> = if multi_useful { vec![false, true] } else { vec![false] };
     let cands = [(false, false), (true, false), (false, true), (true, true)];
-    let mut best = (0usize, false, false, 0u8);
+    let mut best = (0usize, false, false, 0u8, false);
     let mut first = true;
-    for &bg in bgs.iter() {
-        for &(ex, c8) in cands.iter() {
-            let sc = loo_score_bg(train, ex, c8, bg);
-            if first || sc > best.0 {
-                best = (sc, ex, c8, bg);
-                first = false;
+    for &mu in multis.iter() {
+        for &bg in bgs.iter() {
+            for &(ex, c8) in cands.iter() {
+                let sc = loo_score_full(train, ex, c8, bg, mu);
+                if first || sc > best.0 {
+                    best = (sc, ex, c8, bg, mu);
+                    first = false;
+                }
             }
         }
     }
-    learn_seg_bg(train, best.1, 4, None, best.2, best.3)
+    learn_full(train, best.1, 4, None, best.2, best.3, best.4)
 }
 
 pub fn learn(train: &[(Grid, Grid)]) -> Libs {
@@ -2309,6 +2346,20 @@ pub fn learn_seg_bg(
     conn8: bool,
     bg: u8,
 ) -> Libs {
+    learn_full(train, extra, min_support, forced, conn8, bg, false)
+}
+
+/// 표현 공백 3호: 다색 객체 분해까지 지정하는 최종 학습.
+#[allow(clippy::too_many_arguments)]
+pub fn learn_full(
+    train: &[(Grid, Grid)],
+    extra: bool,
+    min_support: u32,
+    forced: Option<u32>,
+    conn8: bool,
+    bg: u8,
+    multi: bool,
+) -> Libs {
     struct Row {
         pair: usize,
         ii: usize,
@@ -2321,8 +2372,15 @@ pub fn learn_seg_bg(
     let mut deletes: Vec<(usize, usize)> = Vec::new();
     let mut copies_ev: Vec<(usize, usize, u32)> = Vec::new();
     for (pi, (gi, go)) in train.iter().enumerate() {
-        let ins = crate::grid::components_bg(gi, conn8, bg);
-        let outs = crate::grid::components_bg(go, conn8, bg);
+        let seg = |g: &Grid| {
+            if multi {
+                crate::grid::components_multi(g, conn8, bg)
+            } else {
+                crate::grid::components_bg(g, conn8, bg)
+            }
+        };
+        let ins = seg(gi);
+        let outs = seg(go);
         for (ii, ois) in align(&ins, &outs) {
             copies_ev.push((pi, ii, ois.len() as u32));
             if ois.is_empty() {
@@ -2465,6 +2523,7 @@ pub fn learn_seg_bg(
         extra,
         conn8,
         bg,
+        multi,
     }
 }
 
@@ -2480,7 +2539,11 @@ pub fn apply(gi: &Grid, libs: &Libs) -> Grid {
             *c = libs.bg;
         }
     }
-    let ins = crate::grid::components_bg(gi, libs.conn8, libs.bg);
+    let ins = if libs.multi {
+        crate::grid::components_multi(gi, libs.conn8, libs.bg)
+    } else {
+        crate::grid::components_bg(gi, libs.conn8, libs.bg)
+    };
     for (ii, io) in ins.iter().enumerate() {
         let n = libs
             .copies
@@ -2498,13 +2561,23 @@ pub fn apply(gi: &Grid, libs: &Libs) -> Grid {
             };
             match class {
                 C_DEL => {}
-                C_STAY => stamp(&mut out, io, io.x0, io.y0, color),
+                C_STAY => {
+                    if libs.multi {
+                        crate::grid::stamp_colors(&mut out, io, io.x0, io.y0);
+                    } else {
+                        stamp(&mut out, io, io.x0, io.y0, color);
+                    }
+                }
                 C_TRANS => {
                     let dx = libs.dx.predict(&evp).map(|v| v as i32 - 16).unwrap_or(0);
                     let dy = libs.dy.predict(&evp).map(|v| v as i32 - 16).unwrap_or(0);
                     let nx = (io.x0 as i32 + dx).max(0) as usize;
                     let ny = (io.y0 as i32 + dy).max(0) as usize;
-                    stamp(&mut out, io, nx, ny, color);
+                    if libs.multi {
+                        crate::grid::stamp_colors(&mut out, io, nx, ny);
+                    } else {
+                        stamp(&mut out, io, nx, ny, color);
+                    }
                 }
                 C_AT_MARKER => {
                     // 표식 색의 모든 객체 위치에 사본 — 관계 앵커의 적용
