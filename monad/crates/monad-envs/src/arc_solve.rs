@@ -30,6 +30,9 @@ pub const S_HOLED: u16 = 10;
 pub const S_ALIGNED: u16 = 11;
 /// 관계 슬롯 2호: 같은 형태(마스크) 파트너 보유 — 형태 쌍 관계.
 pub const S_PAIRED: u16 = 12;
+/// 관계 슬롯 3·4호: 최대 객체 기준 상대 위치(0=앞, 1=같음, 2=뒤).
+pub const S_REL_X: u16 = 13;
+pub const S_REL_Y: u16 = 14;
 
 // 변환 클래스
 pub const C_STAY: u32 = 0;
@@ -467,6 +470,22 @@ fn obj_event(objs: &[Obj], i: usize, copy_k: u32, grid_h: usize, effect: u32, ex
             .enumerate()
             .any(|(j, m)| j != i && m.w == o.w && m.h == o.h && m.mask == o.mask);
         ev.cats.push((S_PAIRED, paired as u32));
+        // 최대 객체를 기준점으로 한 상대 위치 — 관계 추론의 최소 좌표계
+        if let Some(anchor) = objs.iter().max_by_key(|x| (x.area, x.color)) {
+            let (ax, ay) = (anchor.x0 + anchor.w / 2, anchor.y0 + anchor.h / 2);
+            let (cx, cy) = (o.x0 + o.w / 2, o.y0 + o.h / 2);
+            let rel = |a: usize, b: usize| -> u32 {
+                if a < b {
+                    0
+                } else if a == b {
+                    1
+                } else {
+                    2
+                }
+            };
+            ev.cats.push((S_REL_X, rel(cx, ax)));
+            ev.cats.push((S_REL_Y, rel(cy, ay)));
+        }
     }
     ev
 }
