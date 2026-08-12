@@ -63,6 +63,24 @@ impl Obj {
     }
 }
 
+/// 배경색을 지정한 연결 성분 분해(bg=0이면 기존과 동일).
+pub fn components_bg(g: &Grid, conn8: bool, bg: u8) -> Vec<Obj> {
+    if bg == 0 {
+        return components_conn(g, conn8);
+    }
+    // 배경색을 0으로 바꾼 사본에서 분해하되, 원래 0이던 색은 임시 색으로 보존
+    let spare = (1..=9u8).find(|c| !g.cells.contains(c)).unwrap_or(9);
+    let mut t = g.clone();
+    for c in t.cells.iter_mut() {
+        if *c == bg {
+            *c = 0;
+        } else if *c == 0 {
+            *c = spare;
+        }
+    }
+    components_conn(&t, conn8)
+}
+
 /// 연결 성분 분해(conn8=true면 8-이웃 — 대각으로 이어진 덩어리를 하나로).
 pub fn components_conn(g: &Grid, conn8: bool) -> Vec<Obj> {
     if !conn8 {

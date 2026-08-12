@@ -519,6 +519,8 @@ pub struct Libs {
     pub extra: bool,
     /// 8-연결 분해로 학습되었는가(apply도 같은 분해를 써야 한다).
     pub conn8: bool,
+    /// 배경으로 취급한 색(0이면 기존 가정).
+    pub bg: u8,
 }
 
 /// 격자 수준 연산 — 객체 분해로는 안 보이는 전역 구조(대각 벽의 갇힌 영역 등).
@@ -2149,6 +2151,27 @@ pub fn loo_score(train: &[(Grid, Grid)], extra: bool) -> usize {
 
 /// 구성별 LOO 점수(확장 슬롯 × 지지 문턱).
 /// 분해 방식까지 포함한 LOO 채점.
+/// 배경색까지 포함한 LOO 채점.
+pub fn loo_score_bg(train: &[(Grid, Grid)], extra: bool, conn8: bool, bg: u8) -> usize {
+    if train.len() < 2 {
+        return 0;
+    }
+    let mut hits = 0usize;
+    for i in 0..train.len() {
+        let rest: Vec<(Grid, Grid)> = train
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != i)
+            .map(|(_, p)| p.clone())
+            .collect();
+        let libs = learn_seg_bg(&rest, extra, 4, None, conn8, bg);
+        if apply(&train[i].0, &libs) == train[i].1 {
+            hits += 1;
+        }
+    }
+    hits
+}
+
 pub fn loo_score_seg(train: &[(Grid, Grid)], extra: bool, conn8: bool) -> usize {
     if train.len() < 2 {
         return 0;
@@ -2216,15 +2239,30 @@ pub fn learn_best(train: &[(Grid, Grid)]) -> Libs {
 pub fn learn_validated(train: &[(Grid, Grid)]) -> Libs {
     // anytime 구성 탐색: (확장 슬롯, 지지 문턱) 4조합을 LOO로 채점.
     // 동점이면 단순한 구성(기본 슬롯·높은 문턱)을 택한다 — 오컴의 면도날.
+    // 배경 후보: 훈련 입력의 최빈색이 0이 아니면 그 색도 배경 가설로 시험
+    let dom = {
+        let mut cnt = [0usize; 10];
+        for (gi, _) in train {
+            for &c in gi.cells.iter() {
+                cnt[c as usize] += 1;
+            }
+        }
+        (0..10).max_by_key(|&i| cnt[i]).unwrap_or(0) as u8
+    };
+    let bgs: Vec<u8> = if dom != 0 { vec![0, dom] } else { vec![0] };
     let cands = [(false, false), (true, false), (false, true), (true, true)];
-    let mut best = (0usize, false, false);
-    for (i, &(ex, c8)) in cands.iter().enumerate() {
-        let sc = loo_score_seg(train, ex, c8);
-        if i == 0 || sc > best.0 {
-            best = (sc, ex, c8);
+    let mut best = (0usize, false, false, 0u8);
+    let mut first = true;
+    for &bg in bgs.iter() {
+        for &(ex, c8) in cands.iter() {
+            let sc = loo_score_bg(train, ex, c8, bg);
+            if first || sc > best.0 {
+                best = (sc, ex, c8, bg);
+                first = false;
+            }
         }
     }
-    learn_seg(train, best.1, 4, None, best.2)
+    learn_seg_bg(train, best.1, 4, None, best.2, best.3)
 }
 
 pub fn learn(train: &[(Grid, Grid)]) -> Libs {
@@ -2259,6 +2297,18 @@ pub fn learn_seg(
     forced: Option<u32>,
     conn8: bool,
 ) -> Libs {
+    learn_seg_bg(train, extra, min_support, forced, conn8, 0)
+}
+
+/// 배경색까지 지정하는 학습(표현 공백 2호).
+pub fn learn_seg_bg(
+    train: &[(Grid, Grid)],
+    extra: bool,
+    min_support: u32,
+    forced: Option<u32>,
+    conn8: bool,
+    bg: u8,
+) -> Libs {
     struct Row {
         pair: usize,
         ii: usize,
@@ -2271,8 +2321,8 @@ pub fn learn_seg(
     let mut deletes: Vec<(usize, usize)> = Vec::new();
     let mut copies_ev: Vec<(usize, usize, u32)> = Vec::new();
     for (pi, (gi, go)) in train.iter().enumerate() {
-        let ins = crate::grid::components_conn(gi, conn8);
-        let outs = crate::grid::components_conn(go, conn8);
+        let ins = crate::grid::components_bg(gi, conn8, bg);
+        let outs = crate::grid::components_bg(go, conn8, bg);
         for (ii, ois) in align(&ins, &outs) {
             copies_ev.push((pi, ii, ois.len() as u32));
             if ois.is_empty() {
@@ -2414,6 +2464,7 @@ pub fn learn_seg(
         grid_op: try_grid_chain(train),
         extra,
         conn8,
+        bg,
     }
 }
 
@@ -2423,7 +2474,13 @@ pub fn apply(gi: &Grid, libs: &Libs) -> Grid {
         return apply_grid_chain(gi, chain);
     }
     let mut out = Grid::new(gi.w, gi.h);
-    let ins = crate::grid::components_conn(gi, libs.conn8);
+    // 비-0 배경이면 캔버스를 그 색으로 채운다
+    if libs.bg != 0 {
+        for c in out.cells.iter_mut() {
+            *c = libs.bg;
+        }
+    }
+    let ins = crate::grid::components_bg(gi, libs.conn8, libs.bg);
     for (ii, io) in ins.iter().enumerate() {
         let n = libs
             .copies
