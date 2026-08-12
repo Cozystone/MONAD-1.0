@@ -556,6 +556,10 @@ pub enum GridOp {
     SymFillPatch,
     /// 폐색 표시색 c를 대칭으로 복원한 뒤 그 영역만 반환.
     SymFillPatchColor(u8),
+    /// 주기 구조로 폐색을 메운다(비폐색 셀은 보존). mark=0이면 배경이 폐색.
+    PeriodicFill(u8),
+    /// 주기로 폐색을 메운 뒤 그 영역만 반환.
+    PeriodicPatch(u8),
     /// 정수 축소: k×k 블록이 균일할 때 대표 셀로 다운스케일.
     ScaleDown(u8),
     /// 1×1 답: 규칙 코드(0=다수색, 1=최대 객체색, 2=유일 색 객체의 색, 3=최소색).
@@ -933,6 +937,98 @@ fn apply_grid_op(g: &Grid, op: GridOp) -> Grid {
             }
             o
         }
+        GridOp::PeriodicFill(mark) | GridOp::PeriodicPatch(mark) => {
+            let occ = |c: u8| c == mark;
+            // 비폐색 셀에 모순 없는 최소 주기를 찾는다(합동류 색 일치)
+            let mut best: Option<(usize, usize)> = None;
+            'outer: for py in 1..=g.h {
+                for px in 1..=g.w {
+                    if px == g.w && py == g.h {
+                        continue;
+                    }
+                    let mut cls: std::collections::HashMap<(usize, usize), u8> =
+                        Default::default();
+                    let mut ok_p = true;
+                    let mut covered = true;
+                    for y in 0..g.h {
+                        for x in 0..g.w {
+                            let c = g.get(x, y);
+                            if occ(c) {
+                                continue;
+                            }
+                            let k = (x % px, y % py);
+                            match cls.get(&k) {
+                                None => {
+                                    cls.insert(k, c);
+                                }
+                                Some(&e) if e != c => {
+                                    ok_p = false;
+                                }
+                                _ => {}
+                            }
+                        }
+                        if !ok_p {
+                            break;
+                        }
+                    }
+                    if !ok_p {
+                        continue;
+                    }
+                    // 폐색 셀이 전부 채워질 수 있어야 한다
+                    for y in 0..g.h {
+                        for x in 0..g.w {
+                            if occ(g.get(x, y)) && !cls.contains_key(&(x % px, y % py)) {
+                                covered = false;
+                            }
+                        }
+                    }
+                    if covered {
+                        best = Some((px, py));
+                        break 'outer;
+                    }
+                }
+            }
+            let mut o = g.clone();
+            if let Some((px, py)) = best {
+                let mut cls: std::collections::HashMap<(usize, usize), u8> = Default::default();
+                for y in 0..g.h {
+                    for x in 0..g.w {
+                        let c = g.get(x, y);
+                        if !occ(c) {
+                            cls.entry((x % px, y % py)).or_insert(c);
+                        }
+                    }
+                }
+                for y in 0..g.h {
+                    for x in 0..g.w {
+                        if occ(g.get(x, y)) {
+                            if let Some(&c) = cls.get(&(x % px, y % py)) {
+                                o.set(x, y, c);
+                            }
+                        }
+                    }
+                }
+            }
+            if let GridOp::PeriodicPatch(_) = op {
+                let mut bb: Option<(usize, usize, usize, usize)> = None;
+                for y in 0..g.h {
+                    for x in 0..g.w {
+                        if occ(g.get(x, y)) {
+                            bb = Some(match bb {
+                                None => (x, y, x, y),
+                                Some((x0, y0, x1, y1)) => {
+                                    (x0.min(x), y0.min(y), x1.max(x), y1.max(y))
+                                }
+                            });
+                        }
+                    }
+                }
+                if let Some((x0, y0, x1, y1)) = bb {
+                    return crop(&o, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+                }
+            }
+            o
+        }
         GridOp::SymFillPatch | GridOp::SymFillPatchColor(_) => {
             // 폐색 마스크: 배경(0) 또는 지정된 표시색
             let occ = |c: u8| match op {
@@ -1197,10 +1293,33 @@ pub fn try_grid_ops(train: &[(Grid, Grid)]) -> Option<GridOp> {
             }
         }
     }
-    // 폐색 패치 복구(원리 축): 출력이 입력보다 작을 때 대칭 복원 후 가려진 조각
+    // 주기 폐색 복구(동일 크기): 비폐색 보존 + 주기로 메우기
+    if train.iter().all(|(gi, go)| gi.w == go.w && gi.h == go.h) {
+        if ok(GridOp::PeriodicFill(0)) {
+            return Some(GridOp::PeriodicFill(0));
+        }
+        let mut marks: std::collections::BTreeSet<u8> = Default::default();
+        for (gi, go) in train {
+            let out_c: std::collections::HashSet<u8> = go.cells.iter().copied().collect();
+            for &c in gi.cells.iter() {
+                if c != 0 && !out_c.contains(&c) {
+                    marks.insert(c);
+                }
+            }
+        }
+        for &m in &marks {
+            if ok(GridOp::PeriodicFill(m)) {
+                return Some(GridOp::PeriodicFill(m));
+            }
+        }
+    }
+    // 폐색 패치 복구(원리 축): 출력이 입력보다 작을 때 대칭/주기 복원 후 가려진 조각
     if train.iter().all(|(gi, go)| go.w <= gi.w && go.h <= gi.h) {
         if ok(GridOp::SymFillPatch) {
             return Some(GridOp::SymFillPatch);
+        }
+        if ok(GridOp::PeriodicPatch(0)) {
+            return Some(GridOp::PeriodicPatch(0));
         }
         // 표시색 후보: 입력에 있고 출력에 없는 색(가림막)
         let mut marks: std::collections::BTreeSet<u8> = Default::default();
@@ -1216,6 +1335,10 @@ pub fn try_grid_ops(train: &[(Grid, Grid)]) -> Option<GridOp> {
             let op = GridOp::SymFillPatchColor(m);
             if ok(op) {
                 return Some(op);
+            }
+            let op2 = GridOp::PeriodicPatch(m);
+            if ok(op2) {
+                return Some(op2);
             }
         }
     }
