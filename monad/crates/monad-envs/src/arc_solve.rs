@@ -33,6 +33,9 @@ pub const S_PAIRED: u16 = 12;
 /// 관계 슬롯 3·4호: 최대 객체 기준 상대 위치(0=앞, 1=같음, 2=뒤).
 pub const S_REL_X: u16 = 13;
 pub const S_REL_Y: u16 = 14;
+/// 관계 슬롯 5·6호: 기준점까지 체비셰프 거리 버킷 · 기준 객체의 색.
+pub const S_DIST: u16 = 15;
+pub const S_ANCHOR_COLOR: u16 = 16;
 
 // 변환 클래스
 pub const C_STAY: u32 = 0;
@@ -485,6 +488,19 @@ fn obj_event(objs: &[Obj], i: usize, copy_k: u32, grid_h: usize, effect: u32, ex
             };
             ev.cats.push((S_REL_X, rel(cx, ax)));
             ev.cats.push((S_REL_Y, rel(cy, ay)));
+            // 거리 버킷(체비셰프): 인접·근거리·중거리·원거리
+            let d = (cx as i32 - ax as i32).abs().max((cy as i32 - ay as i32).abs());
+            let bucket = if d <= 1 {
+                0
+            } else if d <= 3 {
+                1
+            } else if d <= 6 {
+                2
+            } else {
+                3
+            };
+            ev.cats.push((S_DIST, bucket));
+            ev.cats.push((S_ANCHOR_COLOR, anchor.color as u32));
         }
     }
     ev
