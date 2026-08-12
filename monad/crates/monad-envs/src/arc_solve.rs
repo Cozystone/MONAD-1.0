@@ -562,6 +562,8 @@ pub enum GridOp {
     PeriodicPatch(u8),
     /// 패널 선택: 0=고유(나머지와 다른 하나), 1=최빈, 2=비배경 최다, 3=비배경 최소.
     PanelSelect(u8),
+    /// 패널 요약: 2차원 패널 격자를 패널당 한 셀로 축약(0=대표색, 1=비었나 채웠나).
+    PanelSummary(u8),
     /// 정수 축소: k×k 블록이 균일할 때 대표 셀로 다운스케일.
     ScaleDown(u8),
     /// 1×1 답: 규칙 코드(0=다수색, 1=최대 객체색, 2=유일 색 객체의 색, 3=최소색).
@@ -939,6 +941,37 @@ fn apply_grid_op(g: &Grid, op: GridOp) -> Grid {
             }
             o
         }
+        GridOp::PanelSummary(rule) => match split_grid_cells(g) {
+            None => g.clone(),
+            Some((rows, cols, ps)) => {
+                let mut o = Grid::new(cols, rows);
+                for r in 0..rows {
+                    for c in 0..cols {
+                        let p = &ps[r * cols + c];
+                        let mut cnt = [0usize; 10];
+                        for &v in p.cells.iter() {
+                            if v != 0 {
+                                cnt[v as usize] += 1;
+                            }
+                        }
+                        let dom = (1..10).max_by_key(|&k| (cnt[k], k)).unwrap_or(0);
+                        let filled = cnt.iter().skip(1).any(|&n| n > 0);
+                        let v = match rule {
+                            0 => {
+                                if filled {
+                                    dom as u8
+                                } else {
+                                    0
+                                }
+                            }
+                            _ => filled as u8,
+                        };
+                        o.set(c, r, v);
+                    }
+                }
+                o
+            }
+        },
         GridOp::PanelSelect(rule) => {
             let panels = split_panels_any(g);
             match panels {
@@ -1362,6 +1395,13 @@ pub fn try_grid_ops(train: &[(Grid, Grid)]) -> Option<GridOp> {
                 return Some(op);
             }
         }
+        // 패널 요약: 2차원 패널 격자 → 패널당 한 셀
+        for rule in 0..2u8 {
+            let op = GridOp::PanelSummary(rule);
+            if ok(op) {
+                return Some(op);
+            }
+        }
         // 표시색 후보: 입력에 있고 출력에 없는 색(가림막)
         let mut marks: std::collections::BTreeSet<u8> = Default::default();
         for (gi, go) in train {
@@ -1737,6 +1777,54 @@ pub struct PanelCombineN {
     pub vertical: bool,
     pub n: usize,
     pub table: std::collections::HashMap<Vec<u8>, u8>,
+}
+
+/// 2차원 패널 격자: 양방향 구분선으로 나뉜 (행, 열) 패널 배열.
+fn split_grid_cells(g: &Grid) -> Option<(usize, usize, Vec<Grid>)> {
+    let bounds_of = |n_major: usize, n_minor: usize, at: &dyn Fn(usize, usize) -> u8| {
+        let mut divs: Vec<usize> = Vec::new();
+        let mut col: Option<u8> = None;
+        for i in 0..n_major {
+            let c0 = at(i, 0);
+            if c0 != 0 && (0..n_minor).all(|j| at(i, j) == c0) {
+                if col.map(|d| d == c0).unwrap_or(true) {
+                    col = Some(c0);
+                    divs.push(i);
+                }
+            }
+        }
+        let mut bounds: Vec<(usize, usize)> = Vec::new();
+        let mut start = 0usize;
+        for &d in &divs {
+            if d > start {
+                bounds.push((start, d));
+            }
+            start = d + 1;
+        }
+        if start < n_major {
+            bounds.push((start, n_major));
+        }
+        bounds
+    };
+    let cols = bounds_of(g.w, g.h, &|i, j| g.get(i, j));
+    let rows = bounds_of(g.h, g.w, &|i, j| g.get(j, i));
+    if cols.len() < 2 && rows.len() < 2 {
+        return None;
+    }
+    if cols.is_empty() || rows.is_empty() {
+        return None;
+    }
+    let mut out = Vec::new();
+    for &(y0, y1) in &rows {
+        for &(x0, x1) in &cols {
+            let (pw, ph) = (x1 - x0, y1 - y0);
+            if pw == 0 || ph == 0 {
+                return None;
+            }
+            out.push(crop(g, x0, y0, pw, ph));
+        }
+    }
+    Some((rows.len(), cols.len(), out))
 }
 
 /// 임의 개수의 등분 패널(구분선 1~5개, 세로 우선 → 가로) 또는 반분.
