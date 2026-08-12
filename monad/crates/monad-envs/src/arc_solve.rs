@@ -382,7 +382,7 @@ fn candidates(g_in: &Grid, ins: &[Obj], ii: usize, oo: &Obj) -> Vec<(u32, i32, i
     out
 }
 
-fn obj_event(objs: &[Obj], i: usize, copy_k: u32, grid_h: usize, effect: u32) -> Event {
+fn obj_event(objs: &[Obj], i: usize, copy_k: u32, grid_h: usize, effect: u32, extra: bool) -> Event {
     let o = &objs[i];
     let best = objs.iter().map(|x| (x.area, x.color)).max().unwrap_or((0, 0));
     let largest = (o.area, o.color) == best;
@@ -434,7 +434,7 @@ fn obj_event(objs: &[Obj], i: usize, copy_k: u32, grid_h: usize, effect: u32) ->
         }
         (0..w * h).any(|i| !o.mask[i] && !open[i])
     };
-    Event {
+    let mut ev = Event {
         cats: vec![
             (S_COLOR, o.color as u32),
             (S_LARGEST, largest as u32),
@@ -459,7 +459,16 @@ fn obj_event(objs: &[Obj], i: usize, copy_k: u32, grid_h: usize, effect: u32) ->
         ],
         nums: vec![],
         effect,
+    };
+    // 확장 슬롯: 교차 검증(LOO)이 승인한 과제에서만 쓰인다
+    if extra {
+        let paired = objs
+            .iter()
+            .enumerate()
+            .any(|(j, m)| j != i && m.w == o.w && m.h == o.h && m.mask == o.mask);
+        ev.cats.push((S_PAIRED, paired as u32));
     }
+    ev
 }
 
 #[derive(Clone)]
@@ -471,6 +480,8 @@ pub struct Libs {
     pub copies: SchemaLib,
     /// 격자 수준 연산 연쇄(객체 파이프라인보다 먼저 시도되는 전역 가설, 깊이≤2).
     pub grid_op: Option<(GridOp, Option<GridOp>)>,
+    /// 이 lib이 확장 슬롯으로 학습되었는가(apply가 같은 슬롯으로 조회해야 한다).
+    pub extra: bool,
 }
 
 /// 격자 수준 연산 — 객체 분해로는 안 보이는 전역 구조(대각 벽의 갇힌 영역 등).
@@ -1595,7 +1606,42 @@ pub fn try_norm_then_objects(train: &[(Grid, Grid)]) -> Option<(GridOp, Libs)> {
     None
 }
 
+/// 쌍 간 교차 검증(leave-one-pair-out) — 신규/위험 슬롯의 전제 장치.
+/// 훈련쌍 하나를 빼고 배운 규칙이 그 쌍을 정확히 맞히는 비율로 구성을 채점하고,
+/// 더 일반화하는 슬롯 집합을 고른다(동점이면 단순한 기본 슬롯).
+pub fn loo_score(train: &[(Grid, Grid)], extra: bool) -> usize {
+    if train.len() < 2 {
+        return 0;
+    }
+    let mut hits = 0usize;
+    for i in 0..train.len() {
+        let rest: Vec<(Grid, Grid)> = train
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != i)
+            .map(|(_, p)| p.clone())
+            .collect();
+        let libs = learn_with(&rest, extra);
+        if apply(&train[i].0, &libs) == train[i].1 {
+            hits += 1;
+        }
+    }
+    hits
+}
+
+/// LOO로 슬롯 구성을 선택해 학습한다(W2-2 규칙 교차 검증 항목).
+pub fn learn_validated(train: &[(Grid, Grid)]) -> Libs {
+    let base = loo_score(train, false);
+    let ext = loo_score(train, true);
+    learn_with(train, ext > base)
+}
+
 pub fn learn(train: &[(Grid, Grid)]) -> Libs {
+    learn_with(train, false)
+}
+
+/// 교차 검증(LOO) 선택용: 확장 슬롯 on/off를 지정해 학습한다.
+pub fn learn_with(train: &[(Grid, Grid)], extra: bool) -> Libs {
     struct Row {
         pair: usize,
         ii: usize,
@@ -1680,7 +1726,7 @@ pub fn learn(train: &[(Grid, Grid)]) -> Libs {
     for r in &rows {
         let (ins, gh) = &per_pair[r.pair];
         let (class, p1, p2) = resolve(r);
-        ev_class.push(obj_event(ins, r.ii, r.k, *gh, class));
+        ev_class.push(obj_event(ins, r.ii, r.k, *gh, class, extra));
         // 파라미터 lib은 클래스 조건 슬롯을 갖는다(클래스마다 파라미터 의미가 다름:
         // translate=dx·dy, at_marker=표식 색, ray=방향).
         if class == C_TRANS
@@ -1690,27 +1736,27 @@ pub fn learn(train: &[(Grid, Grid)]) -> Libs {
             || class == C_MARK_REL
             || class == C_RAY_BAND
         {
-            let mut e1 = obj_event(ins, r.ii, r.k, *gh, (p1 + 16).max(0) as u32);
+            let mut e1 = obj_event(ins, r.ii, r.k, *gh, (p1 + 16).max(0) as u32, extra);
             e1.cats.push((S_CLASS, class));
             ev_dx.push(e1);
         }
         if class == C_TRANS || class == C_MARK_REL {
-            let mut e2 = obj_event(ins, r.ii, r.k, *gh, (p2 + 16).max(0) as u32);
+            let mut e2 = obj_event(ins, r.ii, r.k, *gh, (p2 + 16).max(0) as u32, extra);
             e2.cats.push((S_CLASS, class));
             ev_dy.push(e2);
         }
         let ce = if r.out_color == ins[r.ii].color { 0 } else { 100 + r.out_color as u32 };
-        let mut ec = obj_event(ins, r.ii, r.k, *gh, ce);
+        let mut ec = obj_event(ins, r.ii, r.k, *gh, ce, extra);
         ec.cats.push((S_CLASS, class));
         ev_color.push(ec);
     }
     for &(pi, ii) in &deletes {
         let (ins, gh) = &per_pair[pi];
-        ev_class.push(obj_event(ins, ii, 0, *gh, C_DEL));
+        ev_class.push(obj_event(ins, ii, 0, *gh, C_DEL, extra));
     }
     for &(pi, ii, n) in &copies_ev {
         let (ins, gh) = &per_pair[pi];
-        ev_copies.push(obj_event(ins, ii, 0, *gh, n));
+        ev_copies.push(obj_event(ins, ii, 0, *gh, n, extra));
     }
     // 소표본 증폭(4×) + 확신 필터 — 시도 62 참조.
     let amp = |ev: &[Event]| -> Vec<Event> {
@@ -1743,6 +1789,7 @@ pub fn learn(train: &[(Grid, Grid)]) -> Libs {
         color: mk(&ev_color),
         copies: mk(&ev_copies),
         grid_op: try_grid_chain(train),
+        extra,
     }
 }
 
@@ -1754,9 +1801,12 @@ pub fn apply(gi: &Grid, libs: &Libs) -> Grid {
     let mut out = Grid::new(gi.w, gi.h);
     let ins = components(gi);
     for (ii, io) in ins.iter().enumerate() {
-        let n = libs.copies.predict(&obj_event(&ins, ii, 0, gi.h, 0)).unwrap_or(1) as usize;
+        let n = libs
+            .copies
+            .predict(&obj_event(&ins, ii, 0, gi.h, 0, libs.extra))
+            .unwrap_or(1) as usize;
         for k in 0..n {
-            let ev = obj_event(&ins, ii, k as u32, gi.h, 0);
+            let ev = obj_event(&ins, ii, k as u32, gi.h, 0, libs.extra);
             let class = libs.class.predict(&ev).unwrap_or(C_STAY);
             // 파라미터·색 조회는 클래스 조건을 실어 보낸다
             let mut evp = ev.clone();

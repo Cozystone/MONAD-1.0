@@ -109,7 +109,7 @@ fn main() {
         let train: Vec<_> =
             task.train.iter().map(|p| (p.input.clone(), p.output.clone())).collect();
         // 제3계층: 셀 이벤트 스키마 — 격자 연산이 없고 셀 규칙이 훈련 정확 재현이면 채택
-        let mut libs = learn(&train);
+        let mut libs = monad_envs::arc_solve::learn_validated(&train);
         if libs.grid_op.is_none() {
             if let Some(cl) = monad_envs::arc_solve::try_cellwise(&train) {
                 let all_ok = task
