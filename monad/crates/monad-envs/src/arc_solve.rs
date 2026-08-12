@@ -552,6 +552,10 @@ pub enum GridOp {
     ConnectPairs,
     /// 대칭 복원 완전형: H·V·180·전치 대칭을 고정점까지 반복해 배경을 메움.
     SymFillAll,
+    /// 대칭 복원 후 **가려졌던 조각만** 반환(폐색 패치 복구 — ARC 고전 가족).
+    SymFillPatch,
+    /// 폐색 표시색 c를 대칭으로 복원한 뒤 그 영역만 반환.
+    SymFillPatchColor(u8),
     /// 정수 축소: k×k 블록이 균일할 때 대표 셀로 다운스케일.
     ScaleDown(u8),
     /// 1×1 답: 규칙 코드(0=다수색, 1=최대 객체색, 2=유일 색 객체의 색, 3=최소색).
@@ -929,6 +933,38 @@ fn apply_grid_op(g: &Grid, op: GridOp) -> Grid {
             }
             o
         }
+        GridOp::SymFillPatch | GridOp::SymFillPatchColor(_) => {
+            // 폐색 마스크: 배경(0) 또는 지정된 표시색
+            let occ = |c: u8| match op {
+                GridOp::SymFillPatchColor(k) => c == k,
+                _ => c == 0,
+            };
+            let mut work = g.clone();
+            if let GridOp::SymFillPatchColor(_) = op {
+                for c in work.cells.iter_mut() {
+                    if occ(*c) {
+                        *c = 0;
+                    }
+                }
+            }
+            let filled = apply_grid_op(&work, GridOp::SymFillAll);
+            // 원래 폐색이던 셀들의 bbox만 잘라 반환
+            let mut bb: Option<(usize, usize, usize, usize)> = None;
+            for y in 0..g.h {
+                for x in 0..g.w {
+                    if occ(g.get(x, y)) {
+                        bb = Some(match bb {
+                            None => (x, y, x, y),
+                            Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x), y1.max(y)),
+                        });
+                    }
+                }
+            }
+            match bb {
+                Some((x0, y0, x1, y1)) => crop(&filled, x0, y0, x1 - x0 + 1, y1 - y0 + 1),
+                None => filled,
+            }
+        }
         GridOp::ConnectPairs => {
             let mut o = g.clone();
             let objs = components(g);
@@ -1158,6 +1194,28 @@ pub fn try_grid_ops(train: &[(Grid, Grid)]) -> Option<GridOp> {
             let ky = gi0.h / go0.h.max(1);
             if kx == ky && kx > 1 && kx <= 6 && ok(GridOp::ScaleDown(kx as u8)) {
                 return Some(GridOp::ScaleDown(kx as u8));
+            }
+        }
+    }
+    // 폐색 패치 복구(원리 축): 출력이 입력보다 작을 때 대칭 복원 후 가려진 조각
+    if train.iter().all(|(gi, go)| go.w <= gi.w && go.h <= gi.h) {
+        if ok(GridOp::SymFillPatch) {
+            return Some(GridOp::SymFillPatch);
+        }
+        // 표시색 후보: 입력에 있고 출력에 없는 색(가림막)
+        let mut marks: std::collections::BTreeSet<u8> = Default::default();
+        for (gi, go) in train {
+            let out_c: std::collections::HashSet<u8> = go.cells.iter().copied().collect();
+            for &c in gi.cells.iter() {
+                if c != 0 && !out_c.contains(&c) {
+                    marks.insert(c);
+                }
+            }
+        }
+        for &m in &marks {
+            let op = GridOp::SymFillPatchColor(m);
+            if ok(op) {
+                return Some(op);
             }
         }
     }
