@@ -66,11 +66,56 @@ pub const C_AT_MARKER_AREA: u32 = 16;
 pub const C_COLORSWAP: u32 = 17;
 /// 고형화: 객체의 bbox를 제 색으로 가득 채운다(속 빈 도형 메우기).
 pub const C_SOLIDIFY: u32 = 18;
+/// 미끄러짐: 다른 객체나 벽에 닿을 때까지 이동(param1=방향 0우1좌2하3상).
+pub const C_SLIDE: u32 = 19;
 
-pub const CLASS_NAMES: [&str; 19] = [
+/// 방향으로 미끄러진 최종 위치(다른 객체/벽에 닿을 때까지).
+fn slide_dest(g: &Grid, o: &Obj, dir: u8) -> (usize, usize) {
+    let (dx, dy): (i32, i32) = match dir {
+        0 => (1, 0),
+        1 => (-1, 0),
+        2 => (0, 1),
+        _ => (0, -1),
+    };
+    // 자기 자신을 지운 배경판
+    let mut base = g.clone();
+    for yy in 0..o.h {
+        for xx in 0..o.w {
+            if o.mask[yy * o.w + xx] {
+                base.set(o.x0 + xx, o.y0 + yy, 0);
+            }
+        }
+    }
+    let (mut cx, mut cy) = (o.x0 as i32, o.y0 as i32);
+    loop {
+        let (nx, ny) = (cx + dx, cy + dy);
+        if nx < 0 || ny < 0 || nx as usize + o.w > g.w || ny as usize + o.h > g.h {
+            break;
+        }
+        let mut blocked = false;
+        'chk: for yy in 0..o.h {
+            for xx in 0..o.w {
+                if o.mask[yy * o.w + xx]
+                    && base.get(nx as usize + xx, ny as usize + yy) != 0
+                {
+                    blocked = true;
+                    break 'chk;
+                }
+            }
+        }
+        if blocked {
+            break;
+        }
+        cx = nx;
+        cy = ny;
+    }
+    (cx as usize, cy as usize)
+}
+
+pub const CLASS_NAMES: [&str; 20] = [
     "stay", "translate", "mirror_h", "mirror_v", "gravity", "delete", "outline",
     "at_marker", "fill", "ray", "mark_floor", "mark_rel", "rot180", "dilate", "erode",
-    "ray_band", "at_marker_area", "colorswap", "solidify",
+    "ray_band", "at_marker_area", "colorswap", "solidify", "slide",
 ];
 
 /// 1링 팽창 마스크(bbox +2, 4-이웃).
@@ -374,6 +419,22 @@ fn candidates(g_in: &Grid, ins: &[Obj], ii: usize, oo: &Obj) -> Vec<(u32, i32, i
     }
     if same_mask && dx == 0 && (oo.y0 + oo.h == g_in.h) {
         out.push((C_GRAV, 0, dy));
+    }
+    // 미끄러짐: 한 축으로만 움직였고, 그 방향의 충돌 지점과 일치할 때
+    if same_mask && (dx == 0 || dy == 0) && (dx != 0 || dy != 0) {
+        let dir = if dx > 0 {
+            0u8
+        } else if dx < 0 {
+            1
+        } else if dy > 0 {
+            2
+        } else {
+            3
+        };
+        let (sx, sy) = slide_dest(g_in, io, dir);
+        if (sx, sy) == (oo.x0, oo.y0) {
+            out.push((C_SLIDE, dir as i32, 0));
+        }
     }
     let mir_x = (g_in.w - io.w) as i32 - io.x0 as i32;
     let mir_y = (g_in.h - io.h) as i32 - io.y0 as i32;
@@ -3076,6 +3137,7 @@ pub fn learn_full(
             || class == C_RAY
             || class == C_MARK_REL
             || class == C_RAY_BAND
+            || class == C_SLIDE
         {
             let mut e1 = obj_event(ins, r.ii, r.k, *gh, (p1 + 16).max(0) as u32, extra);
             e1.cats.push((S_CLASS, class));
@@ -3275,6 +3337,15 @@ pub fn apply(gi: &Grid, libs: &Libs) -> Grid {
                 C_ERODE => {
                     let m = Obj { mask: erode_mask(io), ..io.clone() };
                     stamp(&mut out, &m, io.x0, io.y0, color);
+                }
+                C_SLIDE => {
+                    let dir = libs.dx.predict(&evp).map(|v| v as i32 - 16).unwrap_or(2);
+                    let (sx, sy) = slide_dest(gi, io, dir.clamp(0, 3) as u8);
+                    if libs.multi {
+                        crate::grid::stamp_colors(&mut out, io, sx, sy);
+                    } else {
+                        stamp(&mut out, io, sx, sy, color);
+                    }
                 }
                 C_SOLIDIFY => {
                     for y in io.y0..(io.y0 + io.h).min(gi.h) {
