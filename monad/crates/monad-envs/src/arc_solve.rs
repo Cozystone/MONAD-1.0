@@ -659,6 +659,8 @@ pub enum GridOp {
     ConnectPairsColor(u8),
     /// 교차점 표시: 표식 셀들의 (열, 행) 교차 자리를 색 c로 찍는다.
     MarkIntersections(u8),
+    /// 대각 주기 채움: (x+y) 또는 (x−y) mod k 합동류로 배경을 복원(dir 0=주대각, 1=반대각).
+    PeriodicDiagFill(u8, u8),
     /// 대칭 완성(신규색): 대칭으로 채워지는 칸을 색 c로 칠한다(0=전역, 1=내용 bbox).
     SymFillColor(u8, u8),
     /// 대각 광선 X: 각 1셀 객체에서 4대각 방향으로 그 색 광선(배경 위만).
@@ -1097,6 +1099,43 @@ fn apply_grid_op(g: &Grid, op: GridOp) -> Grid {
             for y in 0..o.h {
                 for x in 0..o.w {
                     o.set(x, y, g.get(x * k, y * k));
+                }
+            }
+            o
+        }
+        GridOp::PeriodicDiagFill(k, dir) => {
+            let k = (k as usize).max(1);
+            let key = |x: usize, y: usize| -> usize {
+                if dir == 0 {
+                    (x + y) % k
+                } else {
+                    (x + (g.h - 1 - y)) % k
+                }
+            };
+            // 비배경 셀로 합동류 색을 학습(모순이면 그대로 반환)
+            let mut cls: Vec<Option<u8>> = vec![None; k];
+            for y in 0..g.h {
+                for x in 0..g.w {
+                    let c = g.get(x, y);
+                    if c == 0 {
+                        continue;
+                    }
+                    let i = key(x, y);
+                    match cls[i] {
+                        None => cls[i] = Some(c),
+                        Some(e) if e != c => return g.clone(),
+                        _ => {}
+                    }
+                }
+            }
+            let mut o = g.clone();
+            for y in 0..g.h {
+                for x in 0..g.w {
+                    if o.get(x, y) == 0 {
+                        if let Some(c) = cls[key(x, y)] {
+                            o.set(x, y, c);
+                        }
+                    }
                 }
             }
             o
@@ -1896,6 +1935,17 @@ pub fn try_grid_ops(train: &[(Grid, Grid)]) -> Option<GridOp> {
             let identity = (0..10).all(|i| map[i] == i as u8);
             if !identity && ok(op) {
                 return Some(op);
+            }
+        }
+    }
+    // 대각 주기 채움(현미경 기전 ①): (x±y) mod k 합동류
+    if train.iter().all(|(gi, go)| gi.w == go.w && gi.h == go.h) {
+        for k in 2..=8u8 {
+            for dir in 0..2u8 {
+                let op = GridOp::PeriodicDiagFill(k, dir);
+                if ok(op) {
+                    return Some(op);
+                }
             }
         }
     }
