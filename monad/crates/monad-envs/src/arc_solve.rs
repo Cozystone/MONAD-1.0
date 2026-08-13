@@ -645,6 +645,8 @@ pub enum GridOp {
     ScaleDown(u8),
     /// 1×1 답: 규칙 코드(0=다수색, 1=최대 객체색, 2=유일 색 객체의 색, 3=최소색).
     SingleCell(u8),
+    /// 단색 답: (w, h) 크기의 격자를 규칙이 고른 색으로 채운다(속성 판정형).
+    SolidAnswer(u8, u8, u8),
     /// 대각 광선 X: 각 1셀 객체에서 4대각 방향으로 그 색 광선(배경 위만).
     DiagRaysX,
     /// 전역 기하: 회전·전치·거울.
@@ -963,6 +965,38 @@ fn apply_grid_op(g: &Grid, op: GridOp) -> Grid {
                 for x in 0..o.w {
                     o.set(x, y, g.get(x * k, y * k));
                 }
+            }
+            o
+        }
+        GridOp::SolidAnswer(w, h, rule) => {
+            let objs = components(g);
+            let mut cnt = [0usize; 10];
+            for &c in g.cells.iter() {
+                if c != 0 {
+                    cnt[c as usize] += 1;
+                }
+            }
+            let color = match rule {
+                0 => (1..10).max_by_key(|&c| (cnt[c], c)).unwrap_or(0) as u8,
+                1 => objs.iter().max_by_key(|o| (o.area, o.color)).map(|o| o.color).unwrap_or(0),
+                2 => objs
+                    .iter()
+                    .find(|o| objs.iter().filter(|q| q.shape_id() == o.shape_id()).count() == 1)
+                    .map(|o| o.color)
+                    .unwrap_or(0),
+                3 => objs
+                    .iter()
+                    .max_by_key(|o| objs.iter().filter(|q| q.shape_id() == o.shape_id()).count())
+                    .map(|o| o.color)
+                    .unwrap_or(0),
+                _ => (1..10)
+                    .filter(|&c| cnt[c] > 0)
+                    .min_by_key(|&c| (cnt[c], c))
+                    .unwrap_or(0) as u8,
+            };
+            let mut o = Grid::new(w as usize, h as usize);
+            for c in o.cells.iter_mut() {
+                *c = color;
             }
             o
         }
@@ -1605,6 +1639,26 @@ pub fn try_grid_ops(train: &[(Grid, Grid)]) -> Option<GridOp> {
                 }
                 if ok(GridOp::FractalRecolor) {
                     return Some(GridOp::FractalRecolor);
+                }
+            }
+        }
+    }
+    // 단색 답 가족(속성 판정형): 출력이 전부 같은 크기이고 단색일 때
+    {
+        let same_size = train
+            .windows(2)
+            .all(|w| w[0].1.w == w[1].1.w && w[0].1.h == w[1].1.h);
+        let solid = train
+            .iter()
+            .all(|(_, go)| go.cells.windows(2).all(|c| c[0] == c[1]));
+        if same_size && solid && !train.is_empty() {
+            let (ow, oh) = (train[0].1.w, train[0].1.h);
+            if ow <= 30 && oh <= 30 {
+                for rule in 0..5u8 {
+                    let op = GridOp::SolidAnswer(ow as u8, oh as u8, rule);
+                    if ok(op) {
+                        return Some(op);
+                    }
                 }
             }
         }
