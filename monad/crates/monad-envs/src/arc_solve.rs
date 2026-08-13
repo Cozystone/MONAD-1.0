@@ -68,6 +68,37 @@ pub const C_COLORSWAP: u32 = 17;
 pub const C_SOLIDIFY: u32 = 18;
 /// 미끄러짐: 다른 객체나 벽에 닿을 때까지 이동(param1=방향 0우1좌2하3상).
 pub const C_SLIDE: u32 = 19;
+/// 동색 인력: **같은 색 최대 객체** 쪽으로 미끄러진다(방향을 관계에서 계산).
+pub const C_SLIDE_SAME: u32 = 20;
+
+/// 같은 색의 가장 큰 다른 객체 쪽 방향(없으면 None).
+fn same_color_dir(objs: &[Obj], i: usize) -> Option<u8> {
+    let o = &objs[i];
+    let t = objs
+        .iter()
+        .enumerate()
+        .filter(|(j, q)| *j != i && q.color == o.color)
+        .max_by_key(|(_, q)| q.area)?
+        .1;
+    let (ocx, ocy) = (o.x0 as i32 + o.w as i32 / 2, o.y0 as i32 + o.h as i32 / 2);
+    let (tcx, tcy) = (t.x0 as i32 + t.w as i32 / 2, t.y0 as i32 + t.h as i32 / 2);
+    let (ddx, ddy) = (tcx - ocx, tcy - ocy);
+    if ddx.abs() >= ddy.abs() {
+        if ddx > 0 {
+            Some(0)
+        } else if ddx < 0 {
+            Some(1)
+        } else {
+            None
+        }
+    } else if ddy > 0 {
+        Some(2)
+    } else if ddy < 0 {
+        Some(3)
+    } else {
+        None
+    }
+}
 
 /// 방향으로 미끄러진 최종 위치(다른 객체/벽에 닿을 때까지).
 fn slide_dest(g: &Grid, o: &Obj, dir: u8) -> (usize, usize) {
@@ -112,10 +143,10 @@ fn slide_dest(g: &Grid, o: &Obj, dir: u8) -> (usize, usize) {
     (cx as usize, cy as usize)
 }
 
-pub const CLASS_NAMES: [&str; 20] = [
+pub const CLASS_NAMES: [&str; 21] = [
     "stay", "translate", "mirror_h", "mirror_v", "gravity", "delete", "outline",
     "at_marker", "fill", "ray", "mark_floor", "mark_rel", "rot180", "dilate", "erode",
-    "ray_band", "at_marker_area", "colorswap", "solidify", "slide",
+    "ray_band", "at_marker_area", "colorswap", "solidify", "slide", "slide_same",
 ];
 
 /// 1링 팽창 마스크(bbox +2, 4-이웃).
@@ -434,6 +465,10 @@ fn candidates(g_in: &Grid, ins: &[Obj], ii: usize, oo: &Obj) -> Vec<(u32, i32, i
         let (sx, sy) = slide_dest(g_in, io, dir);
         if (sx, sy) == (oo.x0, oo.y0) {
             out.push((C_SLIDE, dir as i32, 0));
+            // 동색 인력: 그 방향이 같은 색 최대 객체 쪽이면 관계 규칙으로도 해석
+            if same_color_dir(ins, ii) == Some(dir) {
+                out.push((C_SLIDE_SAME, 0, 0));
+            }
         }
     }
     let mir_x = (g_in.w - io.w) as i32 - io.x0 as i32;
@@ -3337,6 +3372,15 @@ pub fn apply(gi: &Grid, libs: &Libs) -> Grid {
                 C_ERODE => {
                     let m = Obj { mask: erode_mask(io), ..io.clone() };
                     stamp(&mut out, &m, io.x0, io.y0, color);
+                }
+                C_SLIDE_SAME => {
+                    let dir = same_color_dir(&ins, ii).unwrap_or(2);
+                    let (sx, sy) = slide_dest(gi, io, dir);
+                    if libs.multi {
+                        crate::grid::stamp_colors(&mut out, io, sx, sy);
+                    } else {
+                        stamp(&mut out, io, sx, sy, color);
+                    }
                 }
                 C_SLIDE => {
                     let dir = libs.dx.predict(&evp).map(|v| v as i32 - 16).unwrap_or(2);
