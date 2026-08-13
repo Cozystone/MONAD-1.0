@@ -604,6 +604,8 @@ pub enum GridOp {
     ConnectPairs,
     /// 대칭 복원 완전형: H·V·180·전치 대칭을 고정점까지 반복해 배경을 메움.
     SymFillAll,
+    /// 내용물 bbox 안에서만 대칭 복원(국소 모티프의 대칭 완성).
+    SymFillBBox,
     /// 대칭 복원 후 **가려졌던 조각만** 반환(폐색 패치 복구 — ARC 고전 가족).
     SymFillPatch,
     /// 폐색 표시색 c를 대칭으로 복원한 뒤 그 영역만 반환.
@@ -1225,6 +1227,34 @@ fn apply_grid_op(g: &Grid, op: GridOp) -> Grid {
             }
             o
         }
+        GridOp::SymFillBBox => {
+            // 비배경 내용물의 bbox를 잘라 대칭 복원 후 제자리에 되붙인다
+            let mut bb: Option<(usize, usize, usize, usize)> = None;
+            for y in 0..g.h {
+                for x in 0..g.w {
+                    if g.get(x, y) != 0 {
+                        bb = Some(match bb {
+                            None => (x, y, x, y),
+                            Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x), y1.max(y)),
+                        });
+                    }
+                }
+            }
+            match bb {
+                None => g.clone(),
+                Some((x0, y0, x1, y1)) => {
+                    let sub = crop(g, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+                    let filled = apply_grid_op(&sub, GridOp::SymFillAll);
+                    let mut o = g.clone();
+                    for y in 0..filled.h {
+                        for x in 0..filled.w {
+                            o.set(x0 + x, y0 + y, filled.get(x, y));
+                        }
+                    }
+                    o
+                }
+            }
+        }
         GridOp::SymFillPatch | GridOp::SymFillPatchColor(_) => {
             // 폐색 마스크: 배경(0) 또는 지정된 표시색
             let occ = |c: u8| match op {
@@ -1370,6 +1400,7 @@ pub fn try_grid_ops(train: &[(Grid, Grid)]) -> Option<GridOp> {
         GridOp::SymFillH,
         GridOp::SymFillV,
         GridOp::SymFillAll,
+        GridOp::SymFillBBox,
         GridOp::Rot90,
         GridOp::Rot180,
         GridOp::Rot270,
