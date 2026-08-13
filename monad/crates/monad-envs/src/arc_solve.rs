@@ -609,6 +609,9 @@ pub enum GridOp {
     ExtractFrameInterior,
     /// 추출: 선택 규칙별 객체 bbox(0=형태 유일, 1=형태 최빈, 2=색 최빈, 3=색 최소빈, 4=8연결 최대).
     ExtractBy(u8),
+    /// 부분격자 추출: 고정 크기 (w,h) 창을 규칙으로 고른다
+    /// (0=비배경 최다, 1=비배경 최소, 2=색 종류 최다, 3=색 종류 최소, 4=고유 내용).
+    ExtractWindow(u8, u8, u8),
     /// 색 c의 셀을 전부 배경으로(잡음 제거).
     RemoveColor(u8),
     /// 전역 팔레트 치환: 색 i → map[i].
@@ -805,6 +808,51 @@ fn apply_grid_op(g: &Grid, op: GridOp) -> Grid {
                 .min_by_key(|o| o.color);
             match uniq {
                 Some(b) => crop(g, b.x0, b.y0, b.w, b.h),
+                None => g.clone(),
+            }
+        }
+        GridOp::ExtractWindow(w, h, rule) => {
+            let (ww, hh) = (w as usize, h as usize);
+            if ww == 0 || hh == 0 || ww > g.w || hh > g.h {
+                return g.clone();
+            }
+            // 고유 내용 규칙의 중복 수를 해시 1패스로 미리 센다(O(n⁴) → O(n²·창))
+            let dup_count: std::collections::HashMap<Vec<u8>, i64> = if rule == 4 {
+                let mut m: std::collections::HashMap<Vec<u8>, i64> = Default::default();
+                for y in 0..=(g.h - hh) {
+                    for x in 0..=(g.w - ww) {
+                        *m.entry(crop(g, x, y, ww, hh).cells).or_insert(0) += 1;
+                    }
+                }
+                m
+            } else {
+                Default::default()
+            };
+            let mut best: Option<(i64, usize, usize)> = None;
+            for y in 0..=(g.h - hh) {
+                for x in 0..=(g.w - ww) {
+                    let sub = crop(g, x, y, ww, hh);
+                    let nz = sub.cells.iter().filter(|&&c| c != 0).count() as i64;
+                    let mut set = [false; 10];
+                    for &c in sub.cells.iter() {
+                        set[c as usize] = true;
+                    }
+                    let kinds = set.iter().filter(|&&b| b).count() as i64;
+                    let score = match rule {
+                        0 => nz,
+                        1 => -nz,
+                        2 => kinds,
+                        3 => -kinds,
+                        // 고유 내용: 같은 내용의 창이 적을수록 좋다(해시 사전 계산)
+                        _ => -dup_count.get(&sub.cells).copied().unwrap_or(1),
+                    };
+                    if best.map(|(b, _, _)| score > b).unwrap_or(true) {
+                        best = Some((score, x, y));
+                    }
+                }
+            }
+            match best {
+                Some((_, x, y)) => crop(g, x, y, ww, hh),
                 None => g.clone(),
             }
         }
@@ -1762,6 +1810,18 @@ pub fn try_grid_ops(train: &[(Grid, Grid)]) -> Option<GridOp> {
             let op = GridOp::ExtractBy(rule);
             if ok(op) {
                 return Some(op);
+            }
+        }
+        // 부분격자 창 추출(출력 크기가 전 훈련쌍에서 같을 때)
+        if let Some((first, rest)) = train.split_first() {
+            let (ow, oh) = (first.1.w, first.1.h);
+            if rest.iter().all(|(_, o)| o.w == ow && o.h == oh) && ow <= 30 && oh <= 30 {
+                for rule in 0..5u8 {
+                    let op = GridOp::ExtractWindow(ow as u8, oh as u8, rule);
+                    if ok(op) {
+                        return Some(op);
+                    }
+                }
             }
         }
     }
