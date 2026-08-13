@@ -1,4 +1,4 @@
-//! W2 — ARC 솔버 (W2-0 스파이크에서 검증된 파이프라인의 공용 모듈).
+﻿//! W2 — ARC 솔버 (W2-0 스파이크에서 검증된 파이프라인의 공용 모듈).
 //!
 //! 격자 → 객체(연결 성분) → 정렬 → 관계 오차 후보 라벨링(모호성 보존) →
 //! 전역 일관성 투표 → 인수분해 스키마 lib 5종(클래스/dx/dy/색/사본수) → 적용.
@@ -64,11 +64,13 @@ pub const C_RAY_BAND: u32 = 15;
 pub const C_AT_MARKER_AREA: u32 = 16;
 /// 객체 내 색 교환: 그 객체가 가진 두 색을 맞바꾼다(다색 표현 전용 어휘).
 pub const C_COLORSWAP: u32 = 17;
+/// 고형화: 객체의 bbox를 제 색으로 가득 채운다(속 빈 도형 메우기).
+pub const C_SOLIDIFY: u32 = 18;
 
-pub const CLASS_NAMES: [&str; 18] = [
+pub const CLASS_NAMES: [&str; 19] = [
     "stay", "translate", "mirror_h", "mirror_v", "gravity", "delete", "outline",
     "at_marker", "fill", "ray", "mark_floor", "mark_rel", "rot180", "dilate", "erode",
-    "ray_band", "at_marker_area", "colorswap",
+    "ray_band", "at_marker_area", "colorswap", "solidify",
 ];
 
 /// 1링 팽창 마스크(bbox +2, 4-이웃).
@@ -384,6 +386,17 @@ fn candidates(g_in: &Grid, ins: &[Obj], ii: usize, oo: &Obj) -> Vec<(u32, i32, i
     // 제자리 180도(bbox 불변·마스크 비대칭일 때만 유의미)
     if dx == 0 && dy == 0 && !same_mask && oo.mask == rot180_mask(io) {
         out.push((C_ROT180_OBJ, 0, 0));
+    }
+    // 고형화: 같은 bbox인데 출력이 꽉 찬 사각형(입력은 아니었음)
+    if dx == 0
+        && dy == 0
+        && oo.w == io.w
+        && oo.h == io.h
+        && oo.mask.iter().all(|&b| b)
+        && !io.mask.iter().all(|&b| b)
+    {
+        out.push((C_SOLIDIFY, 0, 0));
+        return out;
     }
     // 형태 변형: 팽창(bbox +2 중심 유지) / 침식(bbox 내 축소)
     if !same_mask {
@@ -2785,6 +2798,13 @@ pub fn apply(gi: &Grid, libs: &Libs) -> Grid {
                 C_ERODE => {
                     let m = Obj { mask: erode_mask(io), ..io.clone() };
                     stamp(&mut out, &m, io.x0, io.y0, color);
+                }
+                C_SOLIDIFY => {
+                    for y in io.y0..(io.y0 + io.h).min(gi.h) {
+                        for x in io.x0..(io.x0 + io.w).min(gi.w) {
+                            out.set(x, y, color);
+                        }
+                    }
                 }
                 C_COLORSWAP => {
                     // 객체가 가진 두 색을 맞바꿔 찍는다
