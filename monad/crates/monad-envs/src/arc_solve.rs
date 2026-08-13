@@ -657,6 +657,8 @@ pub enum GridOp {
     MarkLines(u8, u8),
     /// 쌍 잇기(신규색): 정렬된 같은 색 쌍 사이를 색 c로 연결.
     ConnectPairsColor(u8),
+    /// 교차점 표시: 표식 셀들의 (열, 행) 교차 자리를 색 c로 찍는다.
+    MarkIntersections(u8),
     /// 대칭 완성(신규색): 대칭으로 채워지는 칸을 색 c로 칠한다(0=전역, 1=내용 bbox).
     SymFillColor(u8, u8),
     /// 대각 광선 X: 각 1셀 객체에서 4대각 방향으로 그 색 광선(배경 위만).
@@ -1095,6 +1097,25 @@ fn apply_grid_op(g: &Grid, op: GridOp) -> Grid {
             for y in 0..o.h {
                 for x in 0..o.w {
                     o.set(x, y, g.get(x * k, y * k));
+                }
+            }
+            o
+        }
+        GridOp::MarkIntersections(fill) => {
+            let mut o = g.clone();
+            let mut marks: Vec<(usize, usize)> = Vec::new();
+            for y in 0..g.h {
+                for x in 0..g.w {
+                    if g.get(x, y) != 0 {
+                        marks.push((x, y));
+                    }
+                }
+            }
+            for &(px, _) in &marks {
+                for &(_, qy) in &marks {
+                    if o.get(px, qy) == 0 {
+                        o.set(px, qy, fill);
+                    }
                 }
             }
             o
@@ -1786,6 +1807,9 @@ pub fn try_grid_ops(train: &[(Grid, Grid)]) -> Option<GridOp> {
     for &c in &cand_colors {
         if ok(GridOp::ConnectPairsColor(c)) {
             return Some(GridOp::ConnectPairsColor(c));
+        }
+        if ok(GridOp::MarkIntersections(c)) {
+            return Some(GridOp::MarkIntersections(c));
         }
         for scope in 0..2u8 {
             let op = GridOp::SymFillColor(scope, c);
