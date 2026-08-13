@@ -653,6 +653,8 @@ pub enum GridOp {
     /// 객체 재색칠: 속성 → 색 사상을 훈련에서 학습한다(마스크 보존 가족).
     /// 속성 코드: 0=면적, 1=면적 순위, 2=구멍 수, 3=형태 지문, 4=폭×높이.
     RecolorBy(u8, [u8; 10]),
+    /// 주석 표시: 객체가 점유한 행/열 전체를 색 c로 표시(0=행, 1=열, 2=행+열).
+    MarkLines(u8, u8),
     /// 대각 광선 X: 각 1셀 객체에서 4대각 방향으로 그 색 광선(배경 위만).
     DiagRaysX,
     /// 전역 기하: 회전·전치·거울.
@@ -1089,6 +1091,42 @@ fn apply_grid_op(g: &Grid, op: GridOp) -> Grid {
             for y in 0..o.h {
                 for x in 0..o.w {
                     o.set(x, y, g.get(x * k, y * k));
+                }
+            }
+            o
+        }
+        GridOp::MarkLines(mode, c) => {
+            let mut o = g.clone();
+            let mut rows: Vec<bool> = vec![false; g.h];
+            let mut cols: Vec<bool> = vec![false; g.w];
+            for y in 0..g.h {
+                for x in 0..g.w {
+                    if g.get(x, y) != 0 {
+                        rows[y] = true;
+                        cols[x] = true;
+                    }
+                }
+            }
+            if mode == 0 || mode == 2 {
+                for y in 0..g.h {
+                    if rows[y] {
+                        for x in 0..g.w {
+                            if o.get(x, y) == 0 {
+                                o.set(x, y, c);
+                            }
+                        }
+                    }
+                }
+            }
+            if mode == 1 || mode == 2 {
+                for x in 0..g.w {
+                    if cols[x] {
+                        for y in 0..g.h {
+                            if o.get(x, y) == 0 {
+                                o.set(x, y, c);
+                            }
+                        }
+                    }
                 }
             }
             o
@@ -1691,6 +1729,15 @@ pub fn try_grid_ops(train: &[(Grid, Grid)]) -> Option<GridOp> {
                 if ok(op) {
                     return Some(op);
                 }
+            }
+        }
+    }
+    // 주석 표시(단색·신규색 추가 39건 표적): 점유 행/열을 신규색으로
+    for &c in &cand_colors {
+        for mode in 0..3u8 {
+            let op = GridOp::MarkLines(mode, c);
+            if ok(op) {
+                return Some(op);
             }
         }
     }
