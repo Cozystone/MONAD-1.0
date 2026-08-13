@@ -606,6 +606,8 @@ pub enum GridOp {
     SymFillAll,
     /// 내용물 bbox 안에서만 대칭 복원(국소 모티프의 대칭 완성).
     SymFillBBox,
+    /// 각 객체를 자기 크기만큼 반복 복제해 가장자리까지 채운다(0=우,1=좌,2=하,3=상,4=양방향 수평,5=양방향 수직).
+    RepeatToEdge(u8),
     /// 대칭 복원 후 **가려졌던 조각만** 반환(폐색 패치 복구 — ARC 고전 가족).
     SymFillPatch,
     /// 폐색 표시색 c를 대칭으로 복원한 뒤 그 영역만 반환.
@@ -1227,6 +1229,40 @@ fn apply_grid_op(g: &Grid, op: GridOp) -> Grid {
             }
             o
         }
+        GridOp::RepeatToEdge(dir) => {
+            let mut o = g.clone();
+            for obj in components(g) {
+                let (sx, sy): (i32, i32) = match dir {
+                    0 => (obj.w as i32, 0),
+                    1 => (-(obj.w as i32), 0),
+                    2 => (0, obj.h as i32),
+                    3 => (0, -(obj.h as i32)),
+                    4 => (obj.w as i32, 0),
+                    _ => (0, obj.h as i32),
+                };
+                let both = dir >= 4;
+                for sign in [1i32, -1] {
+                    if !both && sign == -1 {
+                        continue;
+                    }
+                    let (dx, dy) = (sx * sign, sy * sign);
+                    if dx == 0 && dy == 0 {
+                        continue;
+                    }
+                    let (mut x, mut y) = (obj.x0 as i32 + dx, obj.y0 as i32 + dy);
+                    while x >= 0
+                        && y >= 0
+                        && (x as usize) + obj.w <= g.w
+                        && (y as usize) + obj.h <= g.h
+                    {
+                        stamp(&mut o, &obj, x as usize, y as usize, obj.color);
+                        x += dx;
+                        y += dy;
+                    }
+                }
+            }
+            o
+        }
         GridOp::SymFillBBox => {
             // 비배경 내용물의 bbox를 잘라 대칭 복원 후 제자리에 되붙인다
             let mut bb: Option<(usize, usize, usize, usize)> = None;
@@ -1395,6 +1431,13 @@ pub fn try_grid_ops(train: &[(Grid, Grid)]) -> Option<GridOp> {
     }
     if ok(GridOp::ObjSymFill) {
         return Some(GridOp::ObjSymFill);
+    }
+    // 생성형 최대 버킷의 일반 기계: 객체를 제 크기만큼 반복해 가장자리까지
+    for d in 0..6u8 {
+        let op = GridOp::RepeatToEdge(d);
+        if ok(op) {
+            return Some(op);
+        }
     }
     for op in [
         GridOp::SymFillH,
