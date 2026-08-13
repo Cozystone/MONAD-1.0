@@ -655,6 +655,10 @@ pub enum GridOp {
     RecolorBy(u8, [u8; 10]),
     /// 주석 표시: 객체가 점유한 행/열 전체를 색 c로 표시(0=행, 1=열, 2=행+열).
     MarkLines(u8, u8),
+    /// 쌍 잇기(신규색): 정렬된 같은 색 쌍 사이를 색 c로 연결.
+    ConnectPairsColor(u8),
+    /// 대칭 완성(신규색): 대칭으로 채워지는 칸을 색 c로 칠한다(0=전역, 1=내용 bbox).
+    SymFillColor(u8, u8),
     /// 대각 광선 X: 각 1셀 객체에서 4대각 방향으로 그 색 광선(배경 위만).
     DiagRaysX,
     /// 전역 기하: 회전·전치·거울.
@@ -1091,6 +1095,52 @@ fn apply_grid_op(g: &Grid, op: GridOp) -> Grid {
             for y in 0..o.h {
                 for x in 0..o.w {
                     o.set(x, y, g.get(x * k, y * k));
+                }
+            }
+            o
+        }
+        GridOp::ConnectPairsColor(fill) => {
+            let mut o = g.clone();
+            let objs = components(g);
+            for i in 0..objs.len() {
+                for j in (i + 1)..objs.len() {
+                    let (a, b) = (&objs[i], &objs[j]);
+                    if a.color != b.color {
+                        continue;
+                    }
+                    let (acy, bcy) = (a.y0 + a.h / 2, b.y0 + b.h / 2);
+                    let (acx, bcx) = (a.x0 + a.w / 2, b.x0 + b.w / 2);
+                    if acy == bcy {
+                        let (x1, x2) =
+                            if acx < bcx { (a.x0 + a.w, b.x0) } else { (b.x0 + b.w, a.x0) };
+                        for x in x1..x2 {
+                            if o.get(x, acy) == 0 {
+                                o.set(x, acy, fill);
+                            }
+                        }
+                    } else if acx == bcx {
+                        let (y1, y2) =
+                            if acy < bcy { (a.y0 + a.h, b.y0) } else { (b.y0 + b.h, a.y0) };
+                        for y in y1..y2 {
+                            if o.get(acx, y) == 0 {
+                                o.set(acx, y, fill);
+                            }
+                        }
+                    }
+                }
+            }
+            o
+        }
+        GridOp::SymFillColor(scope, fill) => {
+            let base = if scope == 0 {
+                apply_grid_op(g, GridOp::SymFillAll)
+            } else {
+                apply_grid_op(g, GridOp::SymFillBBox)
+            };
+            let mut o = g.clone();
+            for i in 0..o.cells.len() {
+                if g.cells[i] == 0 && base.cells[i] != 0 {
+                    o.cells[i] = fill;
                 }
             }
             o
@@ -1732,8 +1782,17 @@ pub fn try_grid_ops(train: &[(Grid, Grid)]) -> Option<GridOp> {
             }
         }
     }
-    // 주석 표시(단색·신규색 추가 39건 표적): 점유 행/열을 신규색으로
+    // 신규색 주석 가족(현미경으로 분리한 세 기전 중 둘): 쌍 잇기·대칭 완성의 색 변주
     for &c in &cand_colors {
+        if ok(GridOp::ConnectPairsColor(c)) {
+            return Some(GridOp::ConnectPairsColor(c));
+        }
+        for scope in 0..2u8 {
+            let op = GridOp::SymFillColor(scope, c);
+            if ok(op) {
+                return Some(op);
+            }
+        }
         for mode in 0..3u8 {
             let op = GridOp::MarkLines(mode, c);
             if ok(op) {
