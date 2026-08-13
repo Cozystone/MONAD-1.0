@@ -607,6 +607,8 @@ pub enum GridOp {
     ExtractContent,
     /// 추출: 속 빈 사각 액자 객체의 내부 내용물.
     ExtractFrameInterior,
+    /// 추출: 선택 규칙별 객체 bbox(0=형태 유일, 1=형태 최빈, 2=색 최빈, 3=색 최소빈, 4=8연결 최대).
+    ExtractBy(u8),
     /// 색 c의 셀을 전부 배경으로(잡음 제거).
     RemoveColor(u8),
     /// 전역 팔레트 치환: 색 i → map[i].
@@ -801,6 +803,42 @@ fn apply_grid_op(g: &Grid, op: GridOp) -> Grid {
                 .min_by_key(|o| o.color);
             match uniq {
                 Some(b) => crop(g, b.x0, b.y0, b.w, b.h),
+                None => g.clone(),
+            }
+        }
+        GridOp::ExtractBy(rule) => {
+            let objs = if rule == 4 {
+                crate::grid::components_conn(g, true)
+            } else {
+                components(g)
+            };
+            if objs.is_empty() {
+                return g.clone();
+            }
+            let pick = match rule {
+                0 => {
+                    // 형태(마스크)가 유일한 객체
+                    objs.iter().position(|o| {
+                        objs.iter().filter(|q| q.shape_id() == o.shape_id()).count() == 1
+                    })
+                }
+                1 => {
+                    // 형태가 최빈인 그룹의 첫 객체
+                    (0..objs.len()).max_by_key(|&i| {
+                        objs.iter().filter(|q| q.shape_id() == objs[i].shape_id()).count()
+                    })
+                }
+                2 => (0..objs.len())
+                    .max_by_key(|&i| objs.iter().filter(|q| q.color == objs[i].color).count()),
+                3 => (0..objs.len())
+                    .min_by_key(|&i| objs.iter().filter(|q| q.color == objs[i].color).count()),
+                _ => (0..objs.len()).max_by_key(|&i| (objs[i].area, objs[i].color)),
+            };
+            match pick {
+                Some(i) => {
+                    let b = &objs[i];
+                    crop(g, b.x0, b.y0, b.w, b.h)
+                }
                 None => g.clone(),
             }
         }
@@ -1661,6 +1699,13 @@ pub fn try_grid_ops(train: &[(Grid, Grid)]) -> Option<GridOp> {
             GridOp::ExtractContent,
             GridOp::ExtractFrameInterior,
         ] {
+            if ok(op) {
+                return Some(op);
+            }
+        }
+        // 선택 규칙별 추출(형태 유일·형태 최빈·색 최빈/최소빈·8연결 최대)
+        for rule in 0..5u8 {
+            let op = GridOp::ExtractBy(rule);
             if ok(op) {
                 return Some(op);
             }
