@@ -650,6 +650,9 @@ pub enum GridOp {
     SingleCell(u8),
     /// 단색 답: (w, h) 크기의 격자를 규칙이 고른 색으로 채운다(속성 판정형).
     SolidAnswer(u8, u8, u8),
+    /// 객체 재색칠: 속성 → 색 사상을 훈련에서 학습한다(마스크 보존 가족).
+    /// 속성 코드: 0=면적, 1=면적 순위, 2=구멍 수, 3=형태 지문, 4=폭×높이.
+    RecolorBy(u8, [u8; 10]),
     /// 대각 광선 X: 각 1셀 객체에서 4대각 방향으로 그 색 광선(배경 위만).
     DiagRaysX,
     /// 전역 기하: 회전·전치·거울.
@@ -712,6 +715,80 @@ pub fn grid_enclosed(g: &Grid) -> Vec<(usize, usize)> {
         }
     }
     out
+}
+
+/// 객체 속성 키(재색칠 사상의 정의역) — 0..9로 클램프.
+fn obj_attr_key(objs: &[Obj], i: usize, attr: u8) -> u8 {
+    let o = &objs[i];
+    match attr {
+        0 => o.area.min(9) as u8,
+        1 => objs
+            .iter()
+            .filter(|q| (q.area, q.color) > (o.area, o.color))
+            .count()
+            .min(9) as u8,
+        2 => {
+            // 구멍 수(마스크 로컬, 4-연결 배경 성분 중 테두리 미접촉)
+            let (w, h) = (o.w, o.h);
+            let mut open = vec![false; w * h];
+            let mut q: Vec<(usize, usize)> = Vec::new();
+            for x in 0..w {
+                for &y in &[0usize, h - 1] {
+                    if !o.mask[y * w + x] && !open[y * w + x] {
+                        open[y * w + x] = true;
+                        q.push((x, y));
+                    }
+                }
+            }
+            for y in 0..h {
+                for &x in &[0usize, w - 1] {
+                    if !o.mask[y * w + x] && !open[y * w + x] {
+                        open[y * w + x] = true;
+                        q.push((x, y));
+                    }
+                }
+            }
+            while let Some((x, y)) = q.pop() {
+                for (dx, dy) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)] {
+                    let (nx, ny) = (x as i32 + dx, y as i32 + dy);
+                    if nx >= 0 && ny >= 0 && (nx as usize) < w && (ny as usize) < h {
+                        let (ux, uy) = (nx as usize, ny as usize);
+                        if !o.mask[uy * w + ux] && !open[uy * w + ux] {
+                            open[uy * w + ux] = true;
+                            q.push((ux, uy));
+                        }
+                    }
+                }
+            }
+            let mut seen = open.clone();
+            let mut holes = 0u8;
+            for y in 0..h {
+                for x in 0..w {
+                    if o.mask[y * w + x] || seen[y * w + x] {
+                        continue;
+                    }
+                    holes = holes.saturating_add(1);
+                    let mut st = vec![(x, y)];
+                    seen[y * w + x] = true;
+                    while let Some((cx, cy)) = st.pop() {
+                        for (dx, dy) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)] {
+                            let (nx, ny) = (cx as i32 + dx, cy as i32 + dy);
+                            if nx >= 0 && ny >= 0 && (nx as usize) < w && (ny as usize) < h {
+                                let (ux, uy) = (nx as usize, ny as usize);
+                                if !o.mask[uy * w + ux] && !seen[uy * w + ux] {
+                                    seen[uy * w + ux] = true;
+                                    st.push((ux, uy));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            holes.min(9)
+        }
+        3 => (o.shape_id() % 10) as u8,
+        _ => ((o.w * o.h).min(9)) as u8,
+    }
 }
 
 /// 하네스용 공개 래퍼(크기 변환 과제의 직접 적용 경로).
@@ -1013,6 +1090,19 @@ fn apply_grid_op(g: &Grid, op: GridOp) -> Grid {
                 for x in 0..o.w {
                     o.set(x, y, g.get(x * k, y * k));
                 }
+            }
+            o
+        }
+        GridOp::RecolorBy(attr, map) => {
+            let objs = components(g);
+            let mut o = g.clone();
+            for (i, ob) in objs.iter().enumerate() {
+                let key = obj_attr_key(&objs, i, attr);
+                let c = map[key.min(9) as usize];
+                if c == 0 {
+                    continue;
+                }
+                stamp(&mut o, ob, ob.x0, ob.y0, c);
             }
             o
         }
@@ -1554,6 +1644,54 @@ pub fn try_grid_ops(train: &[(Grid, Grid)]) -> Option<GridOp> {
         let op = GridOp::FillEnclosed(c);
         if ok(op) {
             return Some(op);
+        }
+    }
+    // 객체 재색칠(마스크 보존 가족 52건 표적): 속성→색 사상을 훈련에서 학습
+    if train.iter().all(|(gi, go)| {
+        gi.w == go.w
+            && gi.h == go.h
+            && gi
+                .cells
+                .iter()
+                .zip(go.cells.iter())
+                .all(|(a, b)| (*a == 0) == (*b == 0))
+    }) {
+        for attr in 0..5u8 {
+            let mut map = [0u8; 10];
+            let mut consistent = true;
+            'pairs: for (gi, go) in train {
+                let objs = components(gi);
+                for (i, ob) in objs.iter().enumerate() {
+                    let key = obj_attr_key(&objs, i, attr).min(9) as usize;
+                    // 출력에서 이 객체 자리의 색(첫 마스크 셀 기준)
+                    let mut oc = 0u8;
+                    'find: for dy in 0..ob.h {
+                        for dx in 0..ob.w {
+                            if ob.mask[dy * ob.w + dx] {
+                                oc = go.get(ob.x0 + dx, ob.y0 + dy);
+                                break 'find;
+                            }
+                        }
+                    }
+                    if map[key] == 0 {
+                        map[key] = oc;
+                    } else if map[key] != oc {
+                        consistent = false;
+                        break 'pairs;
+                    }
+                }
+            }
+            // 가드(시도 126의 스파이크 회귀 교훈): **속성 의존적일 때만** 채택한다.
+            // 모든 객체가 같은 색으로 가면 그것은 전역 재색칠(PaletteMap)의 몫이고,
+            // 여기서 가로채면 더 단순한 설명을 밀어낸다 — 오컴의 면도날.
+            let distinct: std::collections::HashSet<u8> =
+                map.iter().copied().filter(|&c| c != 0).collect();
+            if consistent && distinct.len() >= 2 {
+                let op = GridOp::RecolorBy(attr, map);
+                if ok(op) {
+                    return Some(op);
+                }
+            }
         }
     }
     if ok(GridOp::ConnectPairs) {
