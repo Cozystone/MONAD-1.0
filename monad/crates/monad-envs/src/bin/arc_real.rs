@@ -36,6 +36,8 @@ fn main() {
     let mut prog_solved = 0usize;
     // 수면-학습 v1: 형상 재구체화로 해결된 과제 수
     let mut sleep_solved = 0usize;
+    // W2-D 셀 역할 꿈으로 해결된 과제 수
+    let mut dream_solved = 0usize;
     let (mut fail_near, mut fail_mid, mut fail_far) = (0usize, 0usize, 0usize);
     let (mut fail_fragmented, mut fail_gen, mut fail_del, mut fail_newcolor) =
         (0usize, 0usize, 0usize, 0usize);
@@ -207,6 +209,22 @@ fn main() {
                             && task.test.iter().all(|p| apply(&p.input, &cand) == p.output)
                     })
             });
+        // W2-D 셀 역할 꿈(시도 139): 별칭 가설 — 같은 겉모습 셀의 다른 출력을
+        // 클론-HMM의 잠재 역할로 분리. 동일 크기·미해결에만, 훈련 정확 게이트.
+        let all_ok = all_ok
+            || (ablate != "dream"
+                && task.test.iter().all(|p| p.input.w == p.output.w && p.input.h == p.output.h)
+                && {
+                    let solved_all = task.test.iter().all(|p| {
+                        monad_envs::arc_dream::dream_cells_solve(&train, &p.input)
+                            .map(|g| g == p.output)
+                            .unwrap_or(false)
+                    });
+                    if solved_all {
+                        dream_solved += 1;
+                    }
+                    solved_all
+                });
         // 수면-학습 라이브러리 v1(시도 137): 풀 규칙을 **형상**으로 추상(상수 색을
         // 와일드카드로)한 뒤, 이 과제의 팔레트로 **재구체화**해 시험한다. 원시
         // 이식(기여 0)과의 차이 = 전이 전에 추상화 — 수면 응고의 본질.
@@ -434,10 +452,11 @@ fn main() {
     println!("  객체 생성형(출력>입력): {fail_gen} · 소멸/병합형(출력<입력): {fail_del}");
     println!("  신규 색 등장(입력에 없는 색): {fail_newcolor}");
     println!(
-        "\n프로그램 합성(W2-3R): 신규 해결 {}건 · 라이브러리 프로그램 {}개 · 수면 형상 재구체화 {}건",
+        "\n프로그램 합성(W2-3R): 신규 해결 {}건 · 라이브러리 프로그램 {}개 · 수면 형상 재구체화 {}건 · 셀 역할 꿈 {}건",
         prog_solved,
         prog_lib.programs.len(),
-        sleep_solved
+        sleep_solved,
+        dream_solved
     );
     println!(
         "스키마 라이브러리(W2-2): 풀 {}규칙 · 과제 간 재사용 {}회 (PRD 재사용률 지표 1차)",
