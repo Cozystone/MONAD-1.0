@@ -46,16 +46,54 @@ fn is_sym_v(g: &Grid) -> bool {
     (0..g.h).all(|y| (0..g.w).all(|x| g.get(x, y) == g.get(x, g.h - 1 - y)))
 }
 
+/// 3×3 패치의 8정이면군 변형(등가류 문맥 증강용).
+fn dihedral9(k: &[u8; 9]) -> Vec<[u8; 9]> {
+    let idx = |x: usize, y: usize| y * 3 + x;
+    let mut out = Vec::with_capacity(8);
+    for t in 0..8u8 {
+        let mut v = [0u8; 9];
+        for y in 0..3 {
+            for x in 0..3 {
+                let (mut nx, mut ny) = (x, y);
+                if t & 1 != 0 {
+                    nx = 2 - nx; // 수평 반전
+                }
+                if t & 2 != 0 {
+                    ny = 2 - ny; // 수직 반전
+                }
+                if t & 4 != 0 {
+                    std::mem::swap(&mut nx, &mut ny); // 전치
+                }
+                v[idx(nx, ny)] = k[idx(x, y)];
+            }
+        }
+        out.push(v);
+    }
+    out
+}
+
 impl Ebm {
     pub fn learn(train: &[(Grid, Grid)]) -> Ebm {
+        Ebm::learn_w(train, [1.0, 0.3, 0.5], false)
+    }
+
+    pub fn learn_w(train: &[(Grid, Grid)], w: [f32; 3], augment: bool) -> Ebm {
         let mut ctx: HashMap<[u8; 9], [f32; 10]> = HashMap::new();
         let mut pair = [[0.1f32; 10]; 10];
         for (i, o) in train {
             for y in 0..i.h {
                 for x in 0..i.w {
                     let k = ctx_key(i, x, y);
+                    let c = o.get(x, y) as usize;
                     let e = ctx.entry(k).or_insert([0.1; 10]);
-                    e[o.get(x, y) as usize] += 1.0;
+                    e[c] += 1.0;
+                    // 등가류 증강: 문맥의 기하 변형에도 같은 출력색(약한 가중)
+                    if augment {
+                        for v in dihedral9(&k) {
+                            let e = ctx.entry(v).or_insert([0.1; 10]);
+                            e[c] += 0.25;
+                        }
+                    }
                     if x + 1 < o.w {
                         pair[o.get(x, y) as usize][o.get(x + 1, y) as usize] += 1.0;
                     }
@@ -67,7 +105,7 @@ impl Ebm {
         }
         let sym_h = train.iter().all(|(_, o)| is_sym_h(o));
         let sym_v = train.iter().all(|(_, o)| is_sym_v(o));
-        Ebm { ctx, pair, sym_h, sym_v, w: [1.0, 0.3, 0.5] }
+        Ebm { ctx, pair, sym_h, sym_v, w }
     }
 
     fn e1(&self, k: &[u8; 9], c: usize) -> f32 {
@@ -164,15 +202,24 @@ impl Ebm {
 }
 
 /// 학습 → 훈련 정확 재현 게이트 → 시험 추론.
+/// 확장(시도 142): 가중치 소형 그리드 × 등가류 증강을 순서대로 시험 —
+/// 훈련 정확 게이트를 처음 통과하는 구성을 채택(오컴: 단순 구성 우선).
 pub fn ebm_solve(train: &[(Grid, Grid)], test_in: &Grid) -> Option<Grid> {
     if train.iter().any(|(i, o)| i.w != o.w || i.h != o.h) {
         return None;
     }
-    let ebm = Ebm::learn(train);
-    for (i, o) in train {
-        if &ebm.infer(i) != o {
-            return None;
+    let configs: [([f32; 3], bool); 5] = [
+        ([1.0, 0.3, 0.5], false), // v1 기본
+        ([1.0, 0.0, 0.0], false), // 문맥 단독
+        ([1.0, 0.6, 0.5], false), // 이웃 강화
+        ([1.0, 0.3, 1.5], false), // 대칭 강화
+        ([1.0, 0.3, 0.5], true),  // 등가류 증강
+    ];
+    for (w, aug) in configs {
+        let ebm = Ebm::learn_w(train, w, aug);
+        if train.iter().all(|(i, o)| &ebm.infer(i) == o) {
+            return Some(ebm.infer(test_in));
         }
     }
-    Some(ebm.infer(test_in))
+    None
 }
