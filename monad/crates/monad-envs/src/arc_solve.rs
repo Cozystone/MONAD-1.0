@@ -734,6 +734,9 @@ pub enum GridOp {
     PanelSelect(u8),
     /// 패널 요약: 2차원 패널 격자를 패널당 한 셀로 축약(0=대표색, 1=비었나 채웠나).
     PanelSummary(u8),
+    /// 패널 색칠: 각 패널을 대표색으로 가득 채운다(구분선 보존).
+    /// 0=최빈색, 1=한 번만 나오는 색, 2=최빈색이되 없으면 비움.
+    PanelPaint(u8),
     /// 프랙탈 자기합성: 비배경(invert면 배경) 셀 자리마다 입력 자신을 찍는다.
     Fractal(bool),
     /// 프랙탈 재색: 사본을 그 셀의 색으로 칠한다(색 정보까지 전파).
@@ -1541,6 +1544,65 @@ fn apply_grid_op(g: &Grid, op: GridOp) -> Grid {
             }
             o
         }
+        GridOp::PanelPaint(rule) => {
+            // 패널 경계를 좌표로 다시 구해 원본 위에 덧칠한다(구분선 보존)
+            let bounds_of = |n_major: usize, n_minor: usize, at: &dyn Fn(usize, usize) -> u8| {
+                let mut divs: Vec<usize> = Vec::new();
+                let mut col: Option<u8> = None;
+                for i in 0..n_major {
+                    let c0 = at(i, 0);
+                    if c0 != 0 && (0..n_minor).all(|j| at(i, j) == c0) {
+                        if col.map(|d| d == c0).unwrap_or(true) {
+                            col = Some(c0);
+                            divs.push(i);
+                        }
+                    }
+                }
+                let mut b: Vec<(usize, usize)> = Vec::new();
+                let mut start = 0usize;
+                for &d in &divs {
+                    if d > start {
+                        b.push((start, d));
+                    }
+                    start = d + 1;
+                }
+                if start < n_major {
+                    b.push((start, n_major));
+                }
+                b
+            };
+            let cols = bounds_of(g.w, g.h, &|i, j| g.get(i, j));
+            let rows = bounds_of(g.h, g.w, &|i, j| g.get(j, i));
+            if cols.len() < 2 && rows.len() < 2 {
+                return g.clone();
+            }
+            let mut o = g.clone();
+            for &(y0, y1) in &rows {
+                for &(x0, x1) in &cols {
+                    let mut cnt = [0usize; 10];
+                    for y in y0..y1 {
+                        for x in x0..x1 {
+                            let c = g.get(x, y);
+                            if c != 0 {
+                                cnt[c as usize] += 1;
+                            }
+                        }
+                    }
+                    let color = match rule {
+                        1 => (1..10).find(|&c| cnt[c] == 1).unwrap_or(0) as u8,
+                        _ => (1..10).max_by_key(|&c| (cnt[c], c)).unwrap_or(0) as u8,
+                    };
+                    let has = cnt.iter().skip(1).any(|&n| n > 0);
+                    let fill = if has { color } else { 0 };
+                    for y in y0..y1 {
+                        for x in x0..x1 {
+                            o.set(x, y, fill);
+                        }
+                    }
+                }
+            }
+            o
+        }
         GridOp::PanelSummary(rule) => match split_grid_cells(g) {
             None => g.clone(),
             Some((rows, cols, ps)) => {
@@ -2030,6 +2092,15 @@ pub fn try_grid_ops(train: &[(Grid, Grid)]) -> Option<GridOp> {
             let op = GridOp::PaletteMap(map);
             let identity = (0..10).all(|i| map[i] == i as u8);
             if !identity && ok(op) {
+                return Some(op);
+            }
+        }
+    }
+    // 패널 색칠(현미경 기전 ②): 각 패널을 대표색으로 채우기
+    if train.iter().all(|(gi, go)| gi.w == go.w && gi.h == go.h) {
+        for rule in 0..2u8 {
+            let op = GridOp::PanelPaint(rule);
+            if ok(op) {
                 return Some(op);
             }
         }
