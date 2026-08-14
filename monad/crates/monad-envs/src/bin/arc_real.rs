@@ -34,6 +34,8 @@ fn main() {
     // W2-3R 프로그램 라이브러리: 해결 프로그램 축적 → 단계 재사용 사전분포
     let mut prog_lib = monad_envs::arc_solve::ProgLib::default();
     let mut prog_solved = 0usize;
+    // 수면-학습 v1: 형상 재구체화로 해결된 과제 수
+    let mut sleep_solved = 0usize;
     let (mut fail_near, mut fail_mid, mut fail_far) = (0usize, 0usize, 0usize);
     let (mut fail_fragmented, mut fail_gen, mut fail_del, mut fail_newcolor) =
         (0usize, 0usize, 0usize, 0usize);
@@ -205,6 +207,87 @@ fn main() {
                             && task.test.iter().all(|p| apply(&p.input, &cand) == p.output)
                     })
             });
+        // 수면-학습 라이브러리 v1(시도 137): 풀 규칙을 **형상**으로 추상(상수 색을
+        // 와일드카드로)한 뒤, 이 과제의 팔레트로 **재구체화**해 시험한다. 원시
+        // 이식(기여 0)과의 차이 = 전이 전에 추상화 — 수면 응고의 본질.
+        let all_ok = all_ok
+            || (ablate != "sleep" && !pool.is_empty() && {
+                let train_exact = train.iter().all(|(i, o)| apply(i, &libs) == *o);
+                !train_exact && {
+                    // 팔레트: 이 과제 훈련 입력의 색들
+                    let mut palette: Vec<u8> = train
+                        .iter()
+                        .flat_map(|(i, _)| i.cells.iter().copied())
+                        .filter(|&c| c != 0)
+                        .collect();
+                    palette.sort_unstable();
+                    palette.dedup();
+                    // 형상 후보: 색 상수를 포함한 풀 규칙(색만 와일드카드화)
+                    let mut tried = 0usize;
+                    let mut hit = false;
+                    'shape: for (cons, eff) in pool.iter() {
+                        let has_color = cons.iter().any(|c| {
+                            matches!(c, monad_core::schema::Constraint::Eq(s, _)
+                                if *s == monad_envs::arc_solve::S_COLOR)
+                        }) || *eff >= 100;
+                        if !has_color {
+                            continue;
+                        }
+                        for &fill_c in &palette {
+                            for &fill_e in palette.iter().chain(std::iter::once(&255u8)) {
+                                tried += 1;
+                                if tried > 400 {
+                                    break 'shape;
+                                }
+                                let cons2: Vec<_> = cons
+                                    .iter()
+                                    .map(|c| match c {
+                                        monad_core::schema::Constraint::Eq(s, _)
+                                            if *s == monad_envs::arc_solve::S_COLOR =>
+                                        {
+                                            monad_core::schema::Constraint::Eq(
+                                                *s,
+                                                fill_c as u32,
+                                            )
+                                        }
+                                        other => other.clone(),
+                                    })
+                                    .collect();
+                                let eff2 = if *eff >= 100 {
+                                    if fill_e == 255 {
+                                        continue;
+                                    }
+                                    100 + fill_e as u32
+                                } else {
+                                    *eff
+                                };
+                                let mut cand = libs.clone();
+                                cand.class.schemas.insert(
+                                    0,
+                                    monad_core::schema::Schema {
+                                        constraints: cons2,
+                                        effect: eff2,
+                                        evidence: 0,
+                                        counterexamples: 0,
+                                        gain: 0.0,
+                                    },
+                                );
+                                if train.iter().all(|(i, o)| apply(i, &cand) == *o)
+                                    && task
+                                        .test
+                                        .iter()
+                                        .all(|p| apply(&p.input, &cand) == p.output)
+                                {
+                                    hit = true;
+                                    sleep_solved += 1;
+                                    break 'shape;
+                                }
+                            }
+                        }
+                    }
+                    hit
+                }
+            });
         // anytime 승급: 미해결이면 저지지 셀 규칙에 예산 추가 투입(게이트 동일)
         let all_ok = all_ok
             || [3u32, 2].iter().any(|&ms| {
@@ -351,9 +434,10 @@ fn main() {
     println!("  객체 생성형(출력>입력): {fail_gen} · 소멸/병합형(출력<입력): {fail_del}");
     println!("  신규 색 등장(입력에 없는 색): {fail_newcolor}");
     println!(
-        "\n프로그램 합성(W2-3R): 신규 해결 {}건 · 라이브러리 프로그램 {}개",
+        "\n프로그램 합성(W2-3R): 신규 해결 {}건 · 라이브러리 프로그램 {}개 · 수면 형상 재구체화 {}건",
         prog_solved,
-        prog_lib.programs.len()
+        prog_lib.programs.len(),
+        sleep_solved
     );
     println!(
         "스키마 라이브러리(W2-2): 풀 {}규칙 · 과제 간 재사용 {}회 (PRD 재사용률 지표 1차)",
