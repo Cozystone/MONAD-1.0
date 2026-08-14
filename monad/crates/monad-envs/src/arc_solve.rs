@@ -2465,6 +2465,35 @@ pub enum PStep {
     Atom(GridOp),
     PerObject(GeomKind),
     PerPanel(GridOp),
+    /// 탐색 시점에 적합된 셀별 색사상(변환 뒤 재색칠 가족의 닫는 단계).
+    ColorMapped([u8; 10]),
+}
+
+/// 중간 격자→정답의 일관된 셀별 색사상을 적합한다(크기 동일 필수, 충돌 시 None).
+fn fit_colormap(pairs: &[(Grid, Grid)]) -> Option<[u8; 10]> {
+    let mut map = [255u8; 10];
+    for (m, o) in pairs {
+        if m.w != o.w || m.h != o.h {
+            return None;
+        }
+        for (a, b) in m.cells.iter().zip(o.cells.iter()) {
+            let (a, b) = (*a as usize, *b);
+            if map[a] == 255 {
+                map[a] = b;
+            } else if map[a] != b {
+                return None;
+            }
+        }
+    }
+    let mut out = [255u8; 10];
+    let mut nontrivial = false;
+    for c in 0..10 {
+        out[c] = if map[c] == 255 { c as u8 } else { map[c] };
+        if out[c] != c as u8 {
+            nontrivial = true;
+        }
+    }
+    if nontrivial { Some(out) } else { None }
 }
 
 fn geom_mask(o: &Obj, k: GeomKind) -> (usize, usize, Vec<bool>) {
@@ -2598,6 +2627,13 @@ pub fn apply_pstep(g: &Grid, s: &PStep) -> Grid {
         PStep::Atom(op) => apply_grid_op(g, *op),
         PStep::PerObject(k) => apply_per_object(g, *k),
         PStep::PerPanel(op) => apply_per_panel(g, *op),
+        PStep::ColorMapped(map) => {
+            let mut o = g.clone();
+            for c in o.cells.iter_mut() {
+                *c = map[*c as usize];
+            }
+            o
+        }
     }
 }
 
@@ -2670,13 +2706,18 @@ pub fn program_search(
         GridOp::MirrorVGrid,
         GridOp::Rot90,
         GridOp::Rot180,
+        GridOp::Rot270,
         GridOp::Transpose,
         GridOp::SymFillAll,
         GridOp::SymFillBBox,
         GridOp::ExtractLargest,
         GridOp::ExtractContent,
+        GridOp::ExtractUniqueColor,
+        GridOp::ExtractFrameInterior,
         GridOp::Scale(2),
+        GridOp::Scale(3),
         GridOp::ScaleDown(2),
+        GridOp::TileMirror4,
     ] {
         base.push(PStep::Atom(op));
     }
@@ -2687,39 +2728,48 @@ pub fn program_search(
         train.iter().all(|(i, o)| &apply_program(i, prog) == o)
     };
 
-    // 깊이 1
+    // 닫는 단계 시도: 정확 일치 또는 적합 색사상으로 마무리
+    let try_close = |mids: &[(Grid, Grid)],
+                     prefix: &[PStep],
+                     budget: &mut i64|
+     -> Option<Vec<PStep>> {
+        *budget -= mids.len() as i64;
+        if mids.iter().all(|(m, o)| m == o) {
+            return Some(prefix.to_vec());
+        }
+        if let Some(map) = fit_colormap(mids) {
+            let mut p = prefix.to_vec();
+            p.push(PStep::ColorMapped(map));
+            return Some(p);
+        }
+        None
+    };
+
+    // 깊이 1 (+ 색사상 마무리)
     for s in &steps {
         if *budget <= 0 {
             return None;
         }
-        let prog = vec![s.clone()];
-        if check(&prog, budget) {
-            return Some(prog);
-        }
-    }
-    // 깊이 2~3 (무변화 가지치기)
-    for s1 in &steps {
-        if *budget <= 0 {
-            return None;
-        }
         let mid1: Vec<(Grid, Grid)> =
-            train.iter().map(|(i, o)| (apply_pstep(i, s1), o.clone())).collect();
+            train.iter().map(|(i, o)| (apply_pstep(i, s), o.clone())).collect();
         if mid1.iter().zip(train.iter()).all(|((m, _), (i, _))| m == i) {
             continue;
         }
+        if let Some(p) = try_close(&mid1, &[s.clone()], budget) {
+            return Some(p);
+        }
+        // 깊이 2~3 (무변화 가지치기)
         for s2 in &steps {
             if *budget <= 0 {
                 return None;
-            }
-            let prog = vec![s1.clone(), s2.clone()];
-            *budget -= train.len() as i64;
-            if mid1.iter().all(|(m, o)| &apply_pstep(m, s2) == o) {
-                return Some(prog);
             }
             let mid2: Vec<(Grid, Grid)> =
                 mid1.iter().map(|(i, o)| (apply_pstep(i, s2), o.clone())).collect();
             if mid2.iter().zip(mid1.iter()).all(|((m, _), (i, _))| m == i) {
                 continue;
+            }
+            if let Some(p) = try_close(&mid2, &[s.clone(), s2.clone()], budget) {
+                return Some(p);
             }
             for s3 in &steps {
                 if *budget <= 0 {
@@ -2727,7 +2777,7 @@ pub fn program_search(
                 }
                 *budget -= train.len() as i64;
                 if mid2.iter().all(|(m, o)| &apply_pstep(m, s3) == o) {
-                    return Some(vec![s1.clone(), s2.clone(), s3.clone()]);
+                    return Some(vec![s.clone(), s2.clone(), s3.clone()]);
                 }
             }
         }
