@@ -682,7 +682,7 @@ pub struct Libs {
 
 /// 격자 수준 연산 — 객체 분해로는 안 보이는 전역 구조(대각 벽의 갇힌 영역 등).
 /// 훈련쌍 전부를 정확히 재현하는 가설만 채택된다(과제 수준 MDL의 극한).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GridOp {
     /// 테두리에서 4-연결 도달 불가한 배경을 색 c로 채움.
     FillEnclosed(u8),
@@ -2426,6 +2426,309 @@ pub fn try_grid_chain3(train: &[(Grid, Grid)]) -> Option<Vec<GridOp>> {
             }
             if let Some(op3) = try_grid_ops(&mid2) {
                 return Some(vec![op1, op2, op3]);
+            }
+        }
+    }
+    None
+}
+
+// ====================================================================
+// W2-3R — 프로그램 합성 계층 (조합자 위의 탐색)
+//
+// 전환의 근거(시도 134): arc_solve의 어휘 40종은 전부 손으로 짠 원자였고,
+// 최근 30유닛은 사람이 검색 알고리즘 역할을 하는 수동 DSL 탐색이었다(중립
+// 20건 = 수확 체감의 서명). 여기서부터는 **시스템이 조합을 발견한다**:
+//
+//   Program ::= Atom(GridOp)                 — 기존 어휘의 재사용
+//             | PerObject(GeomKind)          — 객체별 기하 리프트
+//             | PerPanel(GridOp)             — 패널별 원자 리프트
+//             | SeqP(Vec<Program 원자층>)     — 순차 합성(깊이 ≤3)
+//
+// 탐색은 미해결 과제에만, 예산 내(anytime), 정확 재현 게이트 + 시험 입력
+// 적용 가능성으로 채택한다. 해결된 프로그램은 라이브러리에 축적되어 부분
+// 구조의 재사용 카운트가 탐색 순서의 사전분포가 된다(풀수록 잘 푸는 고리).
+// ====================================================================
+
+/// 객체별 기하 변환의 종류(마스크 제자리 변환 — bbox 좌상단 유지).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GeomKind {
+    Rot90,
+    Rot180,
+    Rot270,
+    FlipH,
+    FlipV,
+}
+
+/// 합성 프로그램의 한 단계.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PStep {
+    Atom(GridOp),
+    PerObject(GeomKind),
+    PerPanel(GridOp),
+}
+
+fn geom_mask(o: &Obj, k: GeomKind) -> (usize, usize, Vec<bool>) {
+    let (w, h) = (o.w, o.h);
+    match k {
+        GeomKind::Rot180 => {
+            let mut m = vec![false; w * h];
+            for y in 0..h {
+                for x in 0..w {
+                    m[(h - 1 - y) * w + (w - 1 - x)] = o.mask[y * w + x];
+                }
+            }
+            (w, h, m)
+        }
+        GeomKind::FlipH => (w, h, hflip(o)),
+        GeomKind::FlipV => (w, h, vflip(o)),
+        GeomKind::Rot90 | GeomKind::Rot270 => {
+            let mut m = vec![false; w * h];
+            let mut out = vec![false; h * w];
+            m.copy_from_slice(&o.mask);
+            for y in 0..h {
+                for x in 0..w {
+                    let (nx, ny) = if k == GeomKind::Rot90 {
+                        (h - 1 - y, x)
+                    } else {
+                        (y, w - 1 - x)
+                    };
+                    out[ny * h + nx] = m[y * w + x];
+                }
+            }
+            (h, w, out)
+        }
+    }
+}
+
+/// 객체별 기하 리프트: 각 객체를 제자리(bbox 좌상단 유지)에서 변환.
+pub fn apply_per_object(g: &Grid, k: GeomKind) -> Grid {
+    let mut o = Grid::new(g.w, g.h);
+    o.cells = g.cells.clone();
+    for obj in components(g) {
+        // 지우고
+        for dy in 0..obj.h {
+            for dx in 0..obj.w {
+                if obj.mask[dy * obj.w + dx] {
+                    o.set(obj.x0 + dx, obj.y0 + dy, 0);
+                }
+            }
+        }
+    }
+    for obj in components(g) {
+        let (nw, nh, nm) = geom_mask(&obj, k);
+        if obj.x0 + nw > g.w || obj.y0 + nh > g.h {
+            // 변환이 격자를 벗어나면 원본 유지(보수적)
+            stamp(&mut o, &obj, obj.x0, obj.y0, obj.color);
+            continue;
+        }
+        let t = Obj { w: nw, h: nh, mask: nm, ..obj.clone() };
+        stamp(&mut o, &t, obj.x0, obj.y0, obj.color);
+    }
+    o
+}
+
+/// 위치 인지 패널 분할: 구분선(0 아닌 단색 전체 행/열)로 나뉜 패널의 (x0,y0,격자).
+fn split_panels_pos(g: &Grid) -> Option<Vec<(usize, usize, Grid)>> {
+    let col_div: Vec<usize> = (0..g.w)
+        .filter(|&x| {
+            let c = g.get(x, 0);
+            c != 0 && (0..g.h).all(|y| g.get(x, y) == c)
+        })
+        .collect();
+    let row_div: Vec<usize> = (0..g.h)
+        .filter(|&y| {
+            let c = g.get(0, y);
+            c != 0 && (0..g.w).all(|x| g.get(x, y) == c)
+        })
+        .collect();
+    if col_div.is_empty() && row_div.is_empty() {
+        return None;
+    }
+    let bounds = |n: usize, divs: &[usize]| -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        let mut start = 0usize;
+        for &d in divs {
+            if d > start {
+                out.push((start, d));
+            }
+            start = d + 1;
+        }
+        if start < n {
+            out.push((start, n));
+        }
+        out
+    };
+    let xs = bounds(g.w, &col_div);
+    let ys = bounds(g.h, &row_div);
+    if xs.is_empty() || ys.is_empty() || xs.len() * ys.len() < 2 {
+        return None;
+    }
+    let mut out = Vec::new();
+    for &(y0, y1) in &ys {
+        for &(x0, x1) in &xs {
+            out.push((x0, y0, crop(g, x0, y0, x1 - x0, y1 - y0)));
+        }
+    }
+    Some(out)
+}
+
+/// 패널별 원자 리프트: 구분선으로 나뉜 각 패널에 원자를 적용해 재조립.
+pub fn apply_per_panel(g: &Grid, op: GridOp) -> Grid {
+    match split_panels_pos(g) {
+        Some(panels) => {
+            let mut out = g.clone();
+            for (x0, y0, sub) in panels {
+                let t = apply_grid_op(&sub, op);
+                if t.w == sub.w && t.h == sub.h {
+                    for y in 0..t.h {
+                        for x in 0..t.w {
+                            out.set(x0 + x, y0 + y, t.get(x, y));
+                        }
+                    }
+                }
+            }
+            out
+        }
+        None => g.clone(),
+    }
+}
+
+pub fn apply_pstep(g: &Grid, s: &PStep) -> Grid {
+    match s {
+        PStep::Atom(op) => apply_grid_op(g, *op),
+        PStep::PerObject(k) => apply_per_object(g, *k),
+        PStep::PerPanel(op) => apply_per_panel(g, *op),
+    }
+}
+
+pub fn apply_program(g: &Grid, prog: &[PStep]) -> Grid {
+    let mut cur = g.clone();
+    for s in prog {
+        cur = apply_pstep(&cur, s);
+    }
+    cur
+}
+
+/// 프로그램 라이브러리: 해결 프로그램의 단계 사용 카운트(탐색 사전분포).
+#[derive(Default)]
+pub struct ProgLib {
+    pub programs: Vec<Vec<PStep>>,
+    pub step_count: Vec<(PStep, u32)>,
+}
+
+impl ProgLib {
+    pub fn record(&mut self, prog: &[PStep]) {
+        self.programs.push(prog.to_vec());
+        for s in prog {
+            match self.step_count.iter_mut().find(|(t, _)| t == s) {
+                Some((_, c)) => *c += 1,
+                None => self.step_count.push((s.clone(), 1)),
+            }
+        }
+    }
+    /// 사전분포 순서의 단계 목록: 재사용 많은 단계 먼저(안정 정렬).
+    pub fn ordered_steps(&self, base: &[PStep]) -> Vec<PStep> {
+        let mut v: Vec<(i64, usize, PStep)> = base
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let c = self
+                    .step_count
+                    .iter()
+                    .find(|(t, _)| t == s)
+                    .map(|(_, c)| *c as i64)
+                    .unwrap_or(0);
+                (-c, i, s.clone())
+            })
+            .collect();
+        v.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        v.into_iter().map(|x| x.2).collect()
+    }
+}
+
+/// 조합 탐색: 깊이 ≤3, 정확 재현 게이트, 예산(스텝 수) 내.
+/// 라이브러리 사전분포로 단계 순서를 정렬한다.
+pub fn program_search(
+    train: &[(Grid, Grid)],
+    lib: &ProgLib,
+    budget: &mut i64,
+) -> Option<Vec<PStep>> {
+    // 원자층: 기하·추출·채움 원자 + 객체별 기하 + 패널별 기하(작은 기저)
+    let mut base: Vec<PStep> = vec![
+        PStep::PerObject(GeomKind::Rot90),
+        PStep::PerObject(GeomKind::Rot180),
+        PStep::PerObject(GeomKind::Rot270),
+        PStep::PerObject(GeomKind::FlipH),
+        PStep::PerObject(GeomKind::FlipV),
+        PStep::PerPanel(GridOp::MirrorHGrid),
+        PStep::PerPanel(GridOp::MirrorVGrid),
+        PStep::PerPanel(GridOp::Rot180),
+        PStep::PerPanel(GridOp::SymFillAll),
+    ];
+    for op in [
+        GridOp::MirrorHGrid,
+        GridOp::MirrorVGrid,
+        GridOp::Rot90,
+        GridOp::Rot180,
+        GridOp::Transpose,
+        GridOp::SymFillAll,
+        GridOp::SymFillBBox,
+        GridOp::ExtractLargest,
+        GridOp::ExtractContent,
+        GridOp::Scale(2),
+        GridOp::ScaleDown(2),
+    ] {
+        base.push(PStep::Atom(op));
+    }
+    let steps = lib.ordered_steps(&base);
+
+    let check = |prog: &[PStep], budget: &mut i64| -> bool {
+        *budget -= train.len() as i64;
+        train.iter().all(|(i, o)| &apply_program(i, prog) == o)
+    };
+
+    // 깊이 1
+    for s in &steps {
+        if *budget <= 0 {
+            return None;
+        }
+        let prog = vec![s.clone()];
+        if check(&prog, budget) {
+            return Some(prog);
+        }
+    }
+    // 깊이 2~3 (무변화 가지치기)
+    for s1 in &steps {
+        if *budget <= 0 {
+            return None;
+        }
+        let mid1: Vec<(Grid, Grid)> =
+            train.iter().map(|(i, o)| (apply_pstep(i, s1), o.clone())).collect();
+        if mid1.iter().zip(train.iter()).all(|((m, _), (i, _))| m == i) {
+            continue;
+        }
+        for s2 in &steps {
+            if *budget <= 0 {
+                return None;
+            }
+            let prog = vec![s1.clone(), s2.clone()];
+            *budget -= train.len() as i64;
+            if mid1.iter().all(|(m, o)| &apply_pstep(m, s2) == o) {
+                return Some(prog);
+            }
+            let mid2: Vec<(Grid, Grid)> =
+                mid1.iter().map(|(i, o)| (apply_pstep(i, s2), o.clone())).collect();
+            if mid2.iter().zip(mid1.iter()).all(|((m, _), (i, _))| m == i) {
+                continue;
+            }
+            for s3 in &steps {
+                if *budget <= 0 {
+                    return None;
+                }
+                *budget -= train.len() as i64;
+                if mid2.iter().all(|(m, o)| &apply_pstep(m, s3) == o) {
+                    return Some(vec![s1.clone(), s2.clone(), s3.clone()]);
+                }
             }
         }
     }

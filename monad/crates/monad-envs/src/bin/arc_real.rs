@@ -31,6 +31,9 @@ fn main() {
     // 스키마 라이브러리 MVP(W2-2 원항목): 해결 과제의 클래스 규칙 누적 + 재사용률
     let mut pool: Vec<(Vec<monad_core::schema::Constraint>, u32)> = Vec::new();
     let mut reuse_hits = 0usize;
+    // W2-3R 프로그램 라이브러리: 해결 프로그램 축적 → 단계 재사용 사전분포
+    let mut prog_lib = monad_envs::arc_solve::ProgLib::default();
+    let mut prog_solved = 0usize;
     let (mut fail_near, mut fail_mid, mut fail_far) = (0usize, 0usize, 0usize);
     let (mut fail_fragmented, mut fail_gen, mut fail_del, mut fail_newcolor) =
         (0usize, 0usize, 0usize, 0usize);
@@ -213,6 +216,26 @@ fn main() {
                     })
                     .unwrap_or(false)
             });
+        // W2-3R 프로그램 합성: 미해결이면 조합자 탐색(객체별·패널별 리프트 × 합성).
+        // 해결 프로그램은 라이브러리에 축적 → 부분 단계 재사용이 탐색 사전분포
+        // (풀수록 잘 푸는 고리). 예산 내(anytime), 정확 재현 게이트.
+        let all_ok = all_ok
+            || (ablate != "prog" && {
+                let mut budget: i64 = 200_000;
+                match monad_envs::arc_solve::program_search(&train, &prog_lib, &mut budget) {
+                    Some(prog) => {
+                        let ok = task.test.iter().all(|p| {
+                            monad_envs::arc_solve::apply_program(&p.input, &prog) == p.output
+                        });
+                        if ok {
+                            prog_lib.record(&prog);
+                            prog_solved += 1;
+                        }
+                        ok
+                    }
+                    None => false,
+                }
+            });
         max_task_ms = max_task_ms.max(t_task.elapsed().as_secs_f32() * 1000.0);
         if all_ok {
             solved += 1;
@@ -328,7 +351,12 @@ fn main() {
     println!("  객체 생성형(출력>입력): {fail_gen} · 소멸/병합형(출력<입력): {fail_del}");
     println!("  신규 색 등장(입력에 없는 색): {fail_newcolor}");
     println!(
-        "\n스키마 라이브러리(W2-2): 풀 {}규칙 · 과제 간 재사용 {}회 (PRD 재사용률 지표 1차)",
+        "\n프로그램 합성(W2-3R): 신규 해결 {}건 · 라이브러리 프로그램 {}개",
+        prog_solved,
+        prog_lib.programs.len()
+    );
+    println!(
+        "스키마 라이브러리(W2-2): 풀 {}규칙 · 과제 간 재사용 {}회 (PRD 재사용률 지표 1차)",
         pool.len(),
         reuse_hits
     );
