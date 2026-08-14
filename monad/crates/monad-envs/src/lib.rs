@@ -7,6 +7,7 @@ pub mod arc_data;
 pub mod arc_solve;
 pub mod bounce;
 pub mod arc_dream;
+pub mod arc_ebm;
 pub mod grid;
 pub mod maze;
 

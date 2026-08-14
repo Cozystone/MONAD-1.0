@@ -38,6 +38,8 @@ fn main() {
     let mut sleep_solved = 0usize;
     // W2-D 셀 역할 꿈으로 해결된 과제 수
     let mut dream_solved = 0usize;
+    // W2-E 에너지 최소화로 해결된 과제 수
+    let mut ebm_solved = 0usize;
     let (mut fail_near, mut fail_mid, mut fail_far) = (0usize, 0usize, 0usize);
     let (mut fail_fragmented, mut fail_gen, mut fail_del, mut fail_newcolor) =
         (0usize, 0usize, 0usize, 0usize);
@@ -208,6 +210,20 @@ fn main() {
                         train.iter().all(|(i, o)| apply(i, &cand) == *o)
                             && task.test.iter().all(|p| apply(&p.input, &cand) == p.output)
                     })
+            });
+        // W2-E 에너지 최소화(시도 141): 약한 제약 중첩의 에너지 최저점 — 명료한
+        // 프로그램이 없는 과제의 마지막 일반 경로(PRD 지정 대안). 훈련 정확 게이트.
+        let all_ok = all_ok
+            || (ablate != "ebm" && {
+                let solved_all = task.test.iter().all(|p| {
+                    monad_envs::arc_ebm::ebm_solve(&train, &p.input)
+                        .map(|g| g == p.output)
+                        .unwrap_or(false)
+                });
+                if solved_all {
+                    ebm_solved += 1;
+                }
+                solved_all
             });
         // W2-D 셀 역할 꿈(시도 139): 별칭 가설 — 같은 겉모습 셀의 다른 출력을
         // 클론-HMM의 잠재 역할로 분리. 동일 크기·미해결에만, 훈련 정확 게이트.
@@ -452,11 +468,12 @@ fn main() {
     println!("  객체 생성형(출력>입력): {fail_gen} · 소멸/병합형(출력<입력): {fail_del}");
     println!("  신규 색 등장(입력에 없는 색): {fail_newcolor}");
     println!(
-        "\n프로그램 합성(W2-3R): 신규 해결 {}건 · 라이브러리 프로그램 {}개 · 수면 형상 재구체화 {}건 · 셀 역할 꿈 {}건",
+        "\n프로그램 합성(W2-3R): 신규 해결 {}건 · 라이브러리 프로그램 {}개 · 수면 형상 재구체화 {}건 · 셀 역할 꿈 {}건 · EBM {}건",
         prog_solved,
         prog_lib.programs.len(),
         sleep_solved,
-        dream_solved
+        dream_solved,
+        ebm_solved
     );
     println!(
         "스키마 라이브러리(W2-2): 풀 {}규칙 · 과제 간 재사용 {}회 (PRD 재사용률 지표 1차)",
