@@ -36,6 +36,7 @@ pub const S_REL_Y: u16 = 14;
 /// 관계 슬롯 5·6호: 기준점까지 체비셰프 거리 버킷 · 기준 객체의 색.
 pub const S_DIST: u16 = 15;
 pub const S_ANCHOR_COLOR: u16 = 16;
+pub const S_HOLES: u16 = 17;
 
 // 변환 클래스
 pub const C_STAY: u32 = 0;
@@ -657,9 +658,84 @@ fn obj_event(objs: &[Obj], i: usize, copy_k: u32, grid_h: usize, effect: u32, ex
             ev.cats.push((S_DIST, bucket));
             ev.cats.push((S_ANCHOR_COLOR, anchor.color as u32));
         }
+        // (시도 136 기각 기록: S_HOLES 구멍 술어 — 중립 + 비용 51%(이벤트마다
+        //  홍수 채움). count_holes는 보존, 재도입 시 객체당 1회 사전 계산 필수.)
     }
     ev
 }
+
+/// 객체 bbox 안에서 마스크의 "구멍"(마스크 밖이면서 가장자리와 연결 안 된 영역) 수.
+fn count_holes(o: &Obj) -> u32 {
+    let (w, h) = (o.w, o.h);
+    let mut seen = vec![false; w * h];
+    // 가장자리에서 흘러들어오는 배경을 먼저 소거
+    let mut stack: Vec<usize> = Vec::new();
+    for x in 0..w {
+        for &y in &[0usize, h - 1] {
+            let i = y * w + x;
+            if !o.mask[i] && !seen[i] {
+                seen[i] = true;
+                stack.push(i);
+            }
+        }
+    }
+    for y in 0..h {
+        for &x in &[0usize, w - 1] {
+            let i = y * w + x;
+            if !o.mask[i] && !seen[i] {
+                seen[i] = true;
+                stack.push(i);
+            }
+        }
+    }
+    while let Some(i) = stack.pop() {
+        let (x, y) = (i % w, i / w);
+        let nb = [
+            (x.wrapping_sub(1), y),
+            (x + 1, y),
+            (x, y.wrapping_sub(1)),
+            (x, y + 1),
+        ];
+        for (nx, ny) in nb {
+            if nx < w && ny < h {
+                let j = ny * w + nx;
+                if !o.mask[j] && !seen[j] {
+                    seen[j] = true;
+                    stack.push(j);
+                }
+            }
+        }
+    }
+    // 남은 비마스크 영역 = 구멍(연결 성분 수)
+    let mut holes = 0u32;
+    for i in 0..w * h {
+        if !o.mask[i] && !seen[i] {
+            holes += 1;
+            let mut st = vec![i];
+            seen[i] = true;
+            while let Some(k) = st.pop() {
+                let (x, y) = (k % w, k / w);
+                let nb = [
+                    (x.wrapping_sub(1), y),
+                    (x + 1, y),
+                    (x, y.wrapping_sub(1)),
+                    (x, y + 1),
+                ];
+                for (nx, ny) in nb {
+                    if nx < w && ny < h {
+                        let j = ny * w + nx;
+                        if !o.mask[j] && !seen[j] {
+                            seen[j] = true;
+                            st.push(j);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    holes
+}
+
 
 #[derive(Clone)]
 pub struct Libs {
