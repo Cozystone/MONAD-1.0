@@ -20,6 +20,7 @@
 
 #![deny(rust_2018_idioms)]
 
+pub mod abstraction;
 pub mod atom;
 pub mod dream;
 pub mod encode;
@@ -31,6 +32,7 @@ pub mod sleep;
 pub mod store;
 pub mod wake;
 
+pub use abstraction::{generalize, lgg, Abstraction, Library, Provenance, Term};
 pub use atom::{Atom, Val};
 pub use dream::{dream, DreamConfig, DreamReport};
 pub use encode::{Encoder, Feature, Obs, Vocab};
