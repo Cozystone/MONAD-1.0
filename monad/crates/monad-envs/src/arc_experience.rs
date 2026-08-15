@@ -300,9 +300,8 @@ pub struct ReuseReport {
 pub fn reinstantiate(
     lib: &mut Library,
     train: &[(Grid, Grid)],
-    test_in: &Grid,
     budget: u32,
-) -> (Option<Grid>, ReuseReport) {
+) -> (Option<Vec<GridOp>>, ReuseReport) {
     let mut rep = ReuseReport::default();
     let mut palette: Vec<u8> = Vec::new();
     for (i, o) in train {
@@ -315,10 +314,10 @@ pub fn reinstantiate(
         }
     }
     palette.sort_unstable();
-    let dims: Vec<u8> = [test_in.w, test_in.h]
-        .iter()
-        .map(|&d| d.min(255) as u8)
-        .collect();
+    let dims: Vec<u8> = train
+        .first()
+        .map(|(i, o)| vec![i.w.min(255) as u8, i.h.min(255) as u8, o.w.min(255) as u8, o.h.min(255) as u8])
+        .unwrap_or_default();
 
     for ix in lib.by_prior() {
         if rep.probes >= budget {
@@ -363,11 +362,7 @@ pub fn reinstantiate(
                     if lib.is_novel(ix, &b) {
                         rep.novel += 1;
                     }
-                    let mut g = test_in.clone();
-                    for op in &ops {
-                        g = apply_grid_op(&g, *op);
-                    }
-                    return (Some(g), rep);
+                    return (Some(ops), rep);
                 }
             }
             // 다음 조합
@@ -452,7 +447,14 @@ mod tests {
         t.set(0, 1, 5);
         let expected = apply_grid_op(&t, GridOp::Scale(4));
 
-        let (got, rep) = reinstantiate(&mut lib, &[(i1, o1), (i2, o2)], &t, 500);
+        let (ops, rep) = reinstantiate(&mut lib, &[(i1, o1), (i2, o2)], 500);
+        let got = ops.map(|ops| {
+            let mut g = t.clone();
+            for op in &ops {
+                g = apply_grid_op(&g, *op);
+            }
+            g
+        });
         assert_eq!(got.as_ref(), Some(&expected), "재구체화로 못 풀었다");
         assert_eq!(rep.hits, 1);
         assert_eq!(rep.novel, 1, "경험에 없던 대입이어야 한다");

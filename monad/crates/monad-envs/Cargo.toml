@@ -38,5 +38,9 @@ name = "arc-spike"
 path = "src/bin/arc_spike.rs"
 
 [[bin]]
+name = "arc-sleep"
+path = "src/bin/arc_sleep.rs"
+
+[[bin]]
 name = "arc-real"
 path = "src/bin/arc_real.rs"

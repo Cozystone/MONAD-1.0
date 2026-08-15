@@ -24,6 +24,13 @@ fn main() {
     let tasks = load_dir(std::path::Path::new(&dir));
     println!("과제 로드: {}개 · {:.1}초", tasks.len(), t0.elapsed().as_secs_f32());
 
+    // ---- M2-R: 경험 저널·라이브러리 경로(코드는 고정, 이 파일들만 자란다) ----
+    let exp_path = std::env::var("MONAD_ARC_EXP")
+        .unwrap_or_else(|_| "C:\\0.ASKIM ALL-VIN\\31.Homage AI\\monad-experience.tsv".into());
+    let lib_path = std::env::var("MONAD_ARC_LIB")
+        .unwrap_or_else(|_| "C:\\0.ASKIM ALL-VIN\\31.Homage AI\\monad-library.tsv".into());
+    let record_exp = std::env::var("MONAD_ARC_RECORD").is_ok();
+
     let mut same_size = 0usize;
     let mut skipped = 0usize;
     let mut solved = 0usize;
@@ -68,6 +75,14 @@ fn main() {
                 if all_ok {
                     solved += 1;
                     solved_names.push(task.name.clone());
+                    if record_exp {
+                        // 경험 기록: 무엇으로 풀었는지 그대로(해석 없음)
+                        monad_envs::arc_experience::append_experience(
+                            &exp_path,
+                            &task.name,
+                            &monad_envs::arc_experience::chain_to_term(&chain),
+                        );
+                    }
                     continue;
                 }
             }
@@ -357,6 +372,17 @@ fn main() {
         if all_ok {
             solved += 1;
             solved_names.push(task.name.clone());
+            // M2-R 경험 기록: 격자 프로그램으로 풀렸으면 그 프로그램을 저널에 적는다
+            if record_exp {
+                if let Some((a, b)) = libs.grid_op {
+                    let ops: Vec<_> = std::iter::once(a).chain(b).collect();
+                    monad_envs::arc_experience::append_experience(
+                        &exp_path,
+                        &task.name,
+                        &monad_envs::arc_experience::chain_to_term(&ops),
+                    );
+                }
+            }
             // 라이브러리 누적 + 재사용 계측: 이번 과제의 규칙이 풀에 이미 있었는가
             for s in &libs.class.schemas {
                 let key = (s.constraints.clone(), s.effect);
@@ -459,6 +485,58 @@ fn main() {
         dt * 1000.0 / same_size.max(1) as f32,
         max_task_ms
     );
+    // ================= M2-R: 코드 고정 자기학습(재구체화 패스) =================
+    // 코드는 이 실행과 이전 실행이 완전히 동일하다. 달라지는 것은 축적된
+    // 라이브러리 파일뿐 — 여기서 나오는 해결은 전부 MONAD_DERIVED 구조의 산물.
+    let mut lib = monad_core::abstraction::Library::load(&lib_path).unwrap_or_default();
+    let mut reuse_solved = 0usize;
+    let mut reuse_novel = 0u32;
+    let mut reuse_probes = 0u32;
+    let mut reuse_tries = 0u32;
+    let lib_before = lib.entries.len();
+    if lib_before > 0 && ablate != "monad" {
+        let t_reuse = std::time::Instant::now();
+        for task in &tasks {
+            if solved_names.contains(&task.name) {
+                continue;
+            }
+            let train: Vec<_> =
+                task.train.iter().map(|p| (p.input.clone(), p.output.clone())).collect();
+            let (ops, rep) = monad_envs::arc_experience::reinstantiate(&mut lib, &train, 20_000);
+            reuse_tries += rep.tries;
+            reuse_novel += rep.novel;
+            reuse_probes += rep.probes;
+            if let Some(ops) = ops {
+                let all_ok = task.test.iter().all(|p| {
+                    monad_envs::arc_solve::apply_grid_chain_n(&p.input, &ops) == p.output
+                });
+                if all_ok {
+                    reuse_solved += 1;
+                    solved += 1;
+                    solved_names.push(task.name.clone());
+                }
+            }
+        }
+        let _ = lib.save(&lib_path);
+        println!(
+            "\n[M2-R 코드 고정 자기학습] 라이브러리 {}개(MONAD_DERIVED {}) · 재구체화 해결 **{}건** \
+             · 신규 대입 {} · 스키마 시도 {} · 후보 검사 {} · {:.0}초",
+            lib_before,
+            lib.count(monad_core::abstraction::Provenance::MonadDerived),
+            reuse_solved,
+            reuse_novel,
+            reuse_tries,
+            reuse_probes,
+            t_reuse.elapsed().as_secs_f32()
+        );
+        println!(
+            "  재사용률 {:.3} · 압축률 {:.2} · 신규 재구체화율 {:.3}",
+            lib.reuse_rate(),
+            lib.compression(),
+            if reuse_solved > 0 { reuse_novel as f64 / reuse_solved as f64 } else { 0.0 }
+        );
+    }
+
     if !solved_names.is_empty() {
         println!("해결 과제: {}", solved_names.join(", "));
     }
