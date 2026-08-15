@@ -34,6 +34,10 @@ fn main() {
 
     let mut rules = Vec::new();
     let mut used = 0usize;
+    // **출처 기록(오염 방지)**: 규칙이 어느 과제에서 왔는지 남긴다. 전이 시험은
+    // 이 목록에 없는 과제에서만 인정해야 한다 — 자기 훈련쌍에서 배운 규칙으로
+    // 자기를 푸는 것은 전이가 아니라 순환이다.
+    let mut sources: Vec<String> = Vec::new();
     for task in tasks.iter().take(take) {
         let train: Vec<_> = task
             .train
@@ -43,9 +47,14 @@ fn main() {
         let r = extract_rules(&train);
         if !r.is_empty() {
             used += 1;
+            sources.push(task.name.clone());
             rules.extend(r);
         }
     }
+    let src_path = std::env::var("MONAD_ARC_PATCHSRC").unwrap_or_else(|_| {
+        "C:\\0.ASKIM ALL-VIN\\31.Homage AI\\monad-patchsource.txt".into()
+    });
+    let _ = std::fs::write(&src_path, sources.join("\n"));
     println!("규칙 경험 추출: {}건 (과제 {}개에서, 앞 {}개 대상)", rules.len(), used, take);
     if rules.len() < 2 {
         println!("일반화할 것이 없다.");

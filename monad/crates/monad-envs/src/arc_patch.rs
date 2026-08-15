@@ -196,6 +196,51 @@ pub fn select_consistent(lib: &Library, train: &[(Grid, Grid)]) -> Vec<(Vec<Term
     kept
 }
 
+/// 규칙의 **일반성** — 조건에 변수가 많을수록(구체 상수가 적을수록) 일반적이다.
+/// 3×3 조건 9칸 중 상수로 고정된 칸 수를 센다(적을수록 넓게 적용된다).
+fn rule_specificity(cond: &[Term]) -> usize {
+    cond.iter().filter(|t| matches!(t, Term::Const(_))).count()
+}
+
+/// **일반화 압력을 넣은 증거 선택**(시도 160).
+///
+/// 시도 159에서 게이트를 통과한 4건 중 3건이 시험에서 틀렸다 — 훈련쌍에 우연히
+/// 맞는 **과도하게 구체적인** 규칙이 섞였기 때문이다. 같은 결과를 내는 규칙
+/// 집합이 여럿이면 **더 일반적인 쪽**(변수가 많은 쪽)을 택한다 — 오컴의 면도날을
+/// 규칙 선택에 적용하는 것이며, 이것이 훈련 적합과 시험 일반화의 간극을 좁힌다.
+///
+/// `min_support`: 이 규칙이 훈련쌍에서 **실제로 고친 셀 수**의 하한. 한 셀만
+/// 고치는 규칙은 그 셀을 외운 것일 수 있다.
+pub fn select_generalizing(
+    lib: &Library,
+    train: &[(Grid, Grid)],
+    min_support: usize,
+) -> Vec<(Vec<Term>, u64)> {
+    let mut scored: Vec<(usize, usize, Vec<Term>, u64)> = Vec::new();
+    for (cond, c) in select_consistent(lib, train) {
+        // 지지도: 이 규칙이 바뀌어야 하는 자리에서 실제로 발화한 횟수
+        let mut support = 0usize;
+        for (i, o) in train {
+            if i.w != o.w || i.h != o.h {
+                continue;
+            }
+            for y in 0..o.h {
+                for x in 0..o.w {
+                    if i.get(x, y) != o.get(x, y) && patch_matches(&cond, i, x, y) {
+                        support += 1;
+                    }
+                }
+            }
+        }
+        if support >= min_support {
+            scored.push((rule_specificity(&cond), support, cond, c));
+        }
+    }
+    // 일반적인 것(구체 상수 적은 것) 먼저, 같으면 지지도 큰 것 먼저
+    scored.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+    scored.into_iter().map(|(_, _, cond, c)| (cond, c)).collect()
+}
+
 /// 선택된 규칙만으로 격자를 고친다(동시 적용).
 pub fn apply_selected(rules: &[(Vec<Term>, u64)], g: &Grid) -> Grid {
     let mut o = g.clone();
@@ -352,6 +397,55 @@ mod tests {
         assert!(!sel.is_empty(), "일관 규칙을 하나도 못 골랐다");
         assert!(selected_reproduce(&sel, &train), "선택 후에도 재현 실패");
         assert_eq!(apply_selected(&sel, &c_in), c_out);
+    }
+
+    /// **일반화 압력**: 훈련쌍에 우연히 맞는 과도하게 구체적인 규칙보다
+    /// 더 일반적인(변수가 많은) 규칙이 먼저 적용돼야 시험에서 살아남는다.
+    #[test]
+    fn generalization_pressure_prefers_broader_rules() {
+        let mut lib = Library::new();
+        // 같은 결과(2)를 내는 두 규칙이 생기도록: 하나는 넓고 하나는 좁게
+        let a_in = g3(&[0, 1, 0, 1, 0, 1, 0, 1, 0]);
+        let a_out = g3(&[0, 1, 0, 1, 2, 1, 0, 1, 0]);
+        let b_in = g3(&[5, 1, 6, 1, 0, 1, 7, 1, 8]);
+        let b_out = g3(&[5, 1, 6, 1, 2, 1, 7, 1, 8]);
+        let mut exp = extract_rules(&[(a_in, a_out), (b_in, b_out)]);
+        exp.extend(exp.clone());
+        sleep_patch_abstract(&exp, &mut lib);
+
+        let mut c_in = Grid::new(5, 3);
+        for (x, y) in [(1, 0), (0, 1), (2, 1), (1, 2)] {
+            c_in.set(x, y, 1);
+        }
+        c_in.set(0, 0, 9); // 모서리를 다르게 — 좁은 규칙은 여기서 안 맞는다
+        let mut c_out = c_in.clone();
+        c_out.set(1, 1, 2);
+        let train = [(c_in.clone(), c_out.clone())];
+
+        let sel = select_generalizing(&lib, &train, 1);
+        assert!(!sel.is_empty(), "일반화 선택이 아무것도 못 골랐다");
+        // 가장 먼저 오는 규칙이 가장 일반적이어야 한다
+        let first = rule_specificity(&sel[0].0);
+        let worst = sel.iter().map(|(c, _)| rule_specificity(c)).max().unwrap();
+        assert!(first <= worst, "구체적인 규칙이 앞에 왔다");
+        assert!(selected_reproduce(&sel, &train), "일반화 선택 후 재현 실패");
+    }
+
+    /// 지지도 하한이 **한 셀만 외운 규칙**을 걸러낸다.
+    #[test]
+    fn support_threshold_filters_memorized_singletons() {
+        let mut lib = Library::new();
+        let a_in = g3(&[0, 1, 0, 1, 0, 1, 0, 1, 0]);
+        let a_out = g3(&[0, 1, 0, 1, 2, 1, 0, 1, 0]);
+        let mut exp = extract_rules(&[(a_in.clone(), a_out.clone())]);
+        exp.extend(exp.clone());
+        sleep_patch_abstract(&exp, &mut lib);
+
+        let train = [(a_in, a_out)];
+        let lo = select_generalizing(&lib, &train, 1);
+        let hi = select_generalizing(&lib, &train, 5);
+        assert!(!lo.is_empty(), "지지도 1에서도 못 고르면 시험이 무의미");
+        assert!(hi.len() <= lo.len(), "지지도 하한이 규칙을 못 걸렀다");
     }
 
     /// 규칙이 맞지 않는 과제에서는 **전이 게이트가 막는다**(거짓 양성 방지).

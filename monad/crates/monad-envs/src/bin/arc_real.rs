@@ -515,6 +515,14 @@ fn main() {
         });
         let patch_lib =
             monad_core::abstraction::Library::load(&patch_lib_path).unwrap_or_default();
+        // 규칙의 출처 과제 목록 — 전이 시험에서 제외한다(순환 방지)
+        let patch_sources: Vec<String> = std::fs::read_to_string(
+            std::env::var("MONAD_ARC_PATCHSRC").unwrap_or_else(|_| {
+                "C:\\0.ASKIM ALL-VIN\\31.Homage AI\\monad-patchsource.txt".into()
+            }),
+        )
+        .map(|t| t.lines().map(|s| s.trim().to_string()).collect())
+        .unwrap_or_default();
         for task in &tasks {
             if solved_names.contains(&task.name) {
                 continue;
@@ -579,8 +587,13 @@ fn main() {
                 // 재현하면, 그 규칙으로 시험을 푼다. 이것이 code-free 전이의 형태다.
                 // 기억은 가설일 뿐 — **이 과제의 증거로 검증해 모순 없는 규칙만**
                 // 채택한다(전량 적용은 남의 규칙이 오발화해 반드시 깨진다, 시도 158).
-                if ops.is_none() {
-                    let sel = monad_envs::arc_patch::select_consistent(&patch_lib, &train);
+                // **오염 차단**: 규칙을 배운 과제 자신에게는 전이를 시도하지 않는다.
+                // 자기 훈련쌍에서 나온 규칙으로 자기를 푸는 것은 전이가 아니라 순환이다.
+                if ops.is_none() && !patch_sources.contains(&task.name) {
+                    // 일반화 압력(시도 160): 지지도 하한 + 일반적인 규칙 우선.
+                    // 159에서 게이트 통과 4건 중 3건이 시험에서 틀린 원인(과적합)의 처방.
+                    let sel =
+                        monad_envs::arc_patch::select_generalizing(&patch_lib, &train, 2);
                     patch_selected += sel.len();
                     if monad_envs::arc_patch::selected_reproduce(&sel, &train) {
                         patch_gate_pass += 1;
