@@ -1,4 +1,4 @@
-[package]
+﻿[package]
 name = "monad-envs"
 version.workspace = true
 edition.workspace = true
@@ -48,3 +48,11 @@ path = "src/bin/arc_real.rs"
 [[bin]]
 name = "arc-oracle"
 path = "src/bin/arc_oracle.rs"
+
+[[bin]]
+name = "arc-anatomy"
+path = "src/bin/arc_anatomy.rs"
+
+[[bin]]
+name = "arc-patchsleep"
+path = "src/bin/arc_patchsleep.rs"

@@ -506,6 +506,15 @@ fn main() {
         let mut partial_precision = 0f64;
         let mut residual_closed = 0usize;
         let mut residual_closed_tries = 0usize;
+        let mut patch_gate_pass = 0usize;
+        let mut patch_solved = 0usize;
+        let mut patch_selected = 0usize;
+        // 패치 규칙 라이브러리는 별도 파일 — 프로그램 스키마와 섞이지 않는다
+        let patch_lib_path = std::env::var("MONAD_ARC_PATCHLIB").unwrap_or_else(|_| {
+            "C:\\0.ASKIM ALL-VIN\\31.Homage AI\\monad-patchlib.tsv".into()
+        });
+        let patch_lib =
+            monad_core::abstraction::Library::load(&patch_lib_path).unwrap_or_default();
         for task in &tasks {
             if solved_names.contains(&task.name) {
                 continue;
@@ -564,6 +573,28 @@ fn main() {
                     reuse_novel += rep3.novel;
                     reuse_probes += rep3.probes;
                     ops = c;
+                }
+                // **패치 규칙 전이**(시도 157) — 잔차 해부가 정한 생성적 기질.
+                // 다른 과제에서 배운 국소 재작성 규칙이 이 과제의 훈련쌍을 정확히
+                // 재현하면, 그 규칙으로 시험을 푼다. 이것이 code-free 전이의 형태다.
+                // 기억은 가설일 뿐 — **이 과제의 증거로 검증해 모순 없는 규칙만**
+                // 채택한다(전량 적용은 남의 규칙이 오발화해 반드시 깨진다, 시도 158).
+                if ops.is_none() {
+                    let sel = monad_envs::arc_patch::select_consistent(&patch_lib, &train);
+                    patch_selected += sel.len();
+                    if monad_envs::arc_patch::selected_reproduce(&sel, &train) {
+                        patch_gate_pass += 1;
+                        let all_ok = task.test.iter().all(|p| {
+                            monad_envs::arc_patch::apply_selected(&sel, &p.input) == p.output
+                        });
+                        if all_ok {
+                            patch_solved += 1;
+                            reuse_solved += 1;
+                            solved += 1;
+                            solved_names.push(task.name.clone());
+                            continue;
+                        }
+                    }
                 }
                 // **잔차 닫기(개념 학습)** — oracle 진단(시도 154)의 처방.
                 // 조합만으로는 도달 불가(40/40 단조 경로 소진)이므로, 부분 진전이
@@ -648,6 +679,21 @@ fn main() {
         println!(
             "  잔차 닫기(개념 학습): 시도 {}건 → **해결 {}건** (조합 불가 영역의 돌파 여부)",
             residual_closed_tries, residual_closed
+        );
+        println!(
+            "  패치 규칙 전이: 규칙 {}개 · 증거선택 누적 {}개 · 훈련 재현 통과 {}건 → **해결 {}건** \
+             (다른 과제에서 배운 규칙이 이 과제를 푸는가)",
+            patch_lib.entries.len(),
+            patch_selected,
+            patch_gate_pass,
+            patch_solved
+        );
+        println!(
+            "\n▶▶ **최종 해결 {} / 400 = {:.1}%** (동결 솔버 {} + MONAD_DERIVED {})",
+            solved,
+            100.0 * solved as f64 / tasks.len() as f64,
+            solved - reuse_solved,
+            reuse_solved
         );
         // 해결 목록을 남긴다 — oracle 진단기가 미해결 집합을 알아야 한다
         let _ = std::fs::write(
