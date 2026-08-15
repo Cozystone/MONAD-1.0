@@ -7,7 +7,7 @@
 //! E = w1·E1(문맥→색 일치) + w2·E2(출력 이웃쌍 일관) + w3·E3(대칭 축 불일치)
 //! 채택 게이트: 같은 추론을 훈련 입력에 돌려 훈련 출력 정확 재현일 때만.
 
-use crate::grid::Grid;
+use crate::grid::{components, stamp, Grid};
 use std::collections::HashMap;
 
 const ICM_ITERS: usize = 12;
@@ -36,6 +36,8 @@ pub struct Ebm {
     /// 훈련 출력의 대칭성(수평/수직 축이 일관 대칭이었는가)
     sym_h: bool,
     sym_v: bool,
+    /// E4 객체 보존: 훈련에서 일관된 (입력 객체 수 → 출력 객체 수) 사상(불일관이면 None)
+    obj_delta: Option<i32>,
     w: [f32; 3],
 }
 
@@ -105,7 +107,109 @@ impl Ebm {
         }
         let sym_h = train.iter().all(|(_, o)| is_sym_h(o));
         let sym_v = train.iter().all(|(_, o)| is_sym_v(o));
-        Ebm { ctx, pair, sym_h, sym_v, w }
+        // E4: (출력 객체 수 − 입력 객체 수)가 전 훈련쌍에서 일관되면 기대 델타
+        let deltas: Vec<i32> = train
+            .iter()
+            .map(|(i, o)| components(o).len() as i32 - components(i).len() as i32)
+            .collect();
+        let obj_delta = if deltas.windows(2).all(|w| w[0] == w[1]) {
+            deltas.first().copied()
+        } else {
+            None
+        };
+        Ebm { ctx, pair, sym_h, sym_v, obj_delta, w }
+    }
+
+    /// 전체 에너지(객체 항 포함) — 객체 제안 패스의 수용 판정에 쓴다.
+    fn total_energy(&self, input: &Grid, out: &Grid) -> f32 {
+        let (w, h) = (out.w, out.h);
+        let mut e = 0.0f32;
+        for y in 0..h {
+            for x in 0..w {
+                let k = ctx_key(input, x, y);
+                let c = out.get(x, y) as usize;
+                e += self.w[0] * self.e1(&k, c);
+                if x + 1 < w {
+                    e += self.w[1] * self.pair_e(c, out.get(x + 1, y) as usize);
+                }
+                if y + 1 < h {
+                    e += self.w[1] * self.pair_e(c, out.get(x, y + 1) as usize);
+                }
+                if self.sym_h && out.get(w - 1 - x, y) as usize != c {
+                    e += self.w[2];
+                }
+                if self.sym_v && out.get(x, h - 1 - y) as usize != c {
+                    e += self.w[2];
+                }
+            }
+        }
+        // E4: 객체 수 기대 이탈(훈련이 일관 사상일 때만, 셀 스케일 벌점)
+        if let Some(d) = self.obj_delta {
+            let expect = components(input).len() as i32 + d;
+            let got = components(out).len() as i32;
+            e += 3.0 * (expect - got).abs() as f32;
+        }
+        e
+    }
+
+    /// 객체 제안 패스: 출력의 각 객체에 {±1 이동(4방향), 팔레트 재색, 삭제}를
+    /// 제안하고 전체 에너지가 줄면 수용. 셀 ICM과 교대(2단 완화).
+    fn object_pass(&self, input: &Grid, out: &mut Grid) -> bool {
+        let mut changed = false;
+        let palette: Vec<u8> = {
+            let mut p: Vec<u8> = self
+                .ctx
+                .values()
+                .flat_map(|c| (0..10).filter(move |&i| c[i] > 0.5).map(|i| i as u8))
+                .collect();
+            p.sort_unstable();
+            p.dedup();
+            p
+        };
+        let base_e = self.total_energy(input, out);
+        let mut cur_e = base_e;
+        for obj in components(&out.clone()) {
+            // 후보 격자 생성: 객체 지우고 변형해 되찍기
+            let mut erased = out.clone();
+            for dy in 0..obj.h {
+                for dx in 0..obj.w {
+                    if obj.mask[dy * obj.w + dx] {
+                        erased.set(obj.x0 + dx, obj.y0 + dy, 0);
+                    }
+                }
+            }
+            let mut cands: Vec<Grid> = Vec::new();
+            cands.push(erased.clone()); // 삭제
+            for (sx, sy) in [(1i32, 0i32), (-1, 0), (0, 1), (0, -1)] {
+                let (nx, ny) = (obj.x0 as i32 + sx, obj.y0 as i32 + sy);
+                if nx >= 0
+                    && ny >= 0
+                    && nx as usize + obj.w <= out.w
+                    && ny as usize + obj.h <= out.h
+                {
+                    let mut g = erased.clone();
+                    stamp(&mut g, &obj, nx as usize, ny as usize, obj.color);
+                    cands.push(g);
+                }
+            }
+            for &c in &palette {
+                if c != obj.color && c != 0 {
+                    let mut g = erased.clone();
+                    stamp(&mut g, &obj, obj.x0, obj.y0, c);
+                    cands.push(g);
+                }
+            }
+            for cand in cands {
+                let e = self.total_energy(input, &cand);
+                if e + 1e-6 < cur_e {
+                    *out = cand;
+                    cur_e = e;
+                    changed = true;
+                    break; // 이 객체에 대해 첫 개선 수용(결정론)
+                }
+            }
+        }
+        changed
     }
 
     fn e1(&self, k: &[u8; 9], c: usize) -> f32 {
@@ -219,6 +323,19 @@ pub fn ebm_solve(train: &[(Grid, Grid)], test_in: &Grid) -> Option<Grid> {
         let ebm = Ebm::learn_w(train, w, aug);
         if train.iter().all(|(i, o)| &ebm.infer(i) == o) {
             return Some(ebm.infer(test_in));
+        }
+        // 2단 교대 완화(시도 143): 셀 ICM → 객체 제안 패스 → (변화 시) 반복.
+        let relax = |g: &Grid| -> Grid {
+            let mut out = ebm.infer(g);
+            for _ in 0..3 {
+                if !ebm.object_pass(g, &mut out) {
+                    break;
+                }
+            }
+            out
+        };
+        if train.iter().all(|(i, o)| &relax(i) == o) {
+            return Some(relax(test_in));
         }
     }
     None
