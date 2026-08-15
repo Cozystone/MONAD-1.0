@@ -268,7 +268,16 @@ pub struct Entry {
     pub tries: u32,
     /// 그중 성공(새 문제를 실제로 푼) 횟수.
     pub wins: u32,
+    /// 발견 근거가 된 구체 대입들(상한 [`MAX_KEPT_BINDINGS`]).
+    ///
+    /// 두 가지 일을 한다: ①재구체화 후보값의 출처(경험이 본 값들)
+    /// ②**신규 재구체화 판정** — 여기에 없는 대입으로 풀면 그것은 경험의
+    /// 복사가 아니라 일반화의 산물이다.
+    pub bindings: Vec<HashMap<u32, Term>>,
 }
+
+/// 항목당 보관하는 구체 대입의 상한(라이브러리 비대 방지).
+pub const MAX_KEPT_BINDINGS: usize = 12;
 
 impl Entry {
     /// 탐색 사전분포 점수 — 성공 이력이 있는 스키마를 먼저 시도한다.
@@ -299,7 +308,18 @@ impl Library {
         if let Some(e) = self.entries.iter_mut().find(|e| e.schema == abs.schema) {
             e.support = e.support.saturating_add(abs.instances.len() as u32);
             e.gain = e.gain.max(abs.gain);
+            for b in &abs.instances {
+                if e.bindings.len() < MAX_KEPT_BINDINGS && !e.bindings.contains(b) {
+                    e.bindings.push(b.clone());
+                }
+            }
             return false;
+        }
+        let mut bindings: Vec<HashMap<u32, Term>> = Vec::new();
+        for b in &abs.instances {
+            if bindings.len() < MAX_KEPT_BINDINGS && !bindings.contains(b) {
+                bindings.push(b.clone());
+            }
         }
         self.entries.push(Entry {
             schema: abs.schema.clone(),
@@ -308,8 +328,32 @@ impl Library {
             support: abs.instances.len() as u32,
             tries: 0,
             wins: 0,
+            bindings,
         });
         true
+    }
+
+    /// 이 대입이 경험에 없던 것인가(신규 재구체화율의 판정자).
+    pub fn is_novel(&self, ix: usize, b: &HashMap<u32, Term>) -> bool {
+        self.entries
+            .get(ix)
+            .map(|e| !e.bindings.contains(b))
+            .unwrap_or(true)
+    }
+
+    /// 변수별로 경험이 본 값들(재구체화 후보의 씨앗).
+    pub fn observed(&self, ix: usize, var: u32) -> Vec<Term> {
+        let mut out: Vec<Term> = Vec::new();
+        if let Some(e) = self.entries.get(ix) {
+            for b in &e.bindings {
+                if let Some(t) = b.get(&var) {
+                    if !out.contains(t) {
+                        out.push(t.clone());
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// 학습된 사전분포 순서로 스키마를 돌려준다(탐색 감소의 원천).
@@ -358,8 +402,20 @@ impl Library {
         use std::io::Write as _;
         let mut s = String::from("MONAD-ABSTRACTION-LIB v1\n");
         for e in &self.entries {
+            let binds: Vec<String> = e
+                .bindings
+                .iter()
+                .map(|b| {
+                    let mut kv: Vec<(u32, &Term)> = b.iter().map(|(k, v)| (*k, v)).collect();
+                    kv.sort_by_key(|x| x.0);
+                    kv.iter()
+                        .map(|(k, v)| format!("{k}:{}", write_term(v)))
+                        .collect::<Vec<_>>()
+                        .join(";")
+                })
+                .collect();
             s.push_str(&format!(
-                "{}\t{}\t{}\t{}\t{}\t{}\n",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
                 write_term(&e.schema),
                 match e.provenance {
                     Provenance::HumanDerived => "H",
@@ -368,7 +424,8 @@ impl Library {
                 e.gain,
                 e.support,
                 e.tries,
-                e.wins
+                e.wins,
+                binds.join("|")
             ));
         }
         let mut f = std::fs::File::create(path)?;
@@ -390,6 +447,22 @@ impl Library {
                 continue;
             };
             let Some(schema) = read_term(t) else { continue };
+            let mut bindings = Vec::new();
+            if let Some(bs) = it.next() {
+                for one in bs.split('|').filter(|x| !x.is_empty()) {
+                    let mut m = HashMap::new();
+                    for kv in one.split(';').filter(|x| !x.is_empty()) {
+                        if let Some((k, v)) = kv.split_once(':') {
+                            if let (Ok(k), Some(v)) = (k.parse::<u32>(), read_term(v)) {
+                                m.insert(k, v);
+                            }
+                        }
+                    }
+                    if !m.is_empty() {
+                        bindings.push(m);
+                    }
+                }
+            }
             lib.entries.push(Entry {
                 schema,
                 provenance: if p == "M" {
@@ -401,6 +474,7 @@ impl Library {
                 support: s.parse().unwrap_or(0),
                 tries: tr.parse().unwrap_or(0),
                 wins: w.parse().unwrap_or(0),
+                bindings,
             });
         }
         Ok(lib)
