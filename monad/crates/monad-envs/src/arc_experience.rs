@@ -81,6 +81,38 @@ fn c(v: u8) -> Term {
     Term::Const(v as u64)
 }
 
+/// 중간 격자의 상한(셀 수). ARC 최대는 30×30=900이므로 확대 중간 단계까지
+/// 넉넉하다. 재구체화가 확대 연산에 큰 값을 넣으면 크기가 곱으로 폭발하므로
+/// (실측: 656GB 할당 시도) **적용 전에** 예측 크기로 막는다.
+pub const MAX_CELLS: usize = 60_000;
+
+/// 자원 가드가 붙은 연쇄 적용. 상한을 넘으면 적용하지 않고 None.
+pub fn safe_chain(g: &Grid, ops: &[GridOp]) -> Option<Grid> {
+    let mut cur = g.clone();
+    for op in ops {
+        // 크기를 키우는 연산만 배율이 1을 넘는다(나머지는 보존하거나 줄인다)
+        let (mx, my) = match op {
+            GridOp::Scale(k) => (*k as usize, *k as usize),
+            GridOp::Tile(a, b) => (*a as usize, *b as usize),
+            GridOp::TileMirror4 => (2, 2),
+            GridOp::Fractal(_) | GridOp::FractalRecolor => (cur.w, cur.h),
+            _ => (1, 1),
+        };
+        let cells = cur
+            .w
+            .saturating_mul(mx)
+            .saturating_mul(cur.h.saturating_mul(my));
+        if cells == 0 || cells > MAX_CELLS {
+            return None;
+        }
+        cur = apply_grid_op(&cur, *op);
+        if cur.w == 0 || cur.h == 0 || cur.w * cur.h > MAX_CELLS {
+            return None;
+        }
+    }
+    Some(cur)
+}
+
 /// 연산 → 항(인자는 상수 리스트). 해석 없는 기계 인코딩.
 pub fn op_to_term(op: &GridOp) -> Term {
     use GridOp::*;
@@ -104,6 +136,22 @@ pub fn op_to_term(op: &GridOp) -> Term {
     Term::App(op_tag(op), args)
 }
 
+/// 색을 격자에 **쓰는** 인자는 0..=9여야 한다. 재구체화가 크기 같은 값을 색
+/// 자리에 넣으면 격자에 10 이상의 셀이 생겨 이후 연산이 무너진다(실측 패닉).
+/// 디코더가 그 자리에서 막는다 — 동결 솔버는 손대지 않는다.
+fn color_ok(op: &GridOp) -> bool {
+    use GridOp::*;
+    let c9 = |c: u8| c <= 9;
+    match op {
+        FillEnclosed(c) | RemoveColor(c) | SymFillPatchColor(c) | PeriodicFill(c)
+        | PeriodicPatch(c) | ConnectPairsColor(c) | MarkIntersections(c) => c9(*c),
+        MarkLines(_, c) | SymFillColor(_, c) => c9(*c),
+        PaletteMap(m) => m.iter().all(|&c| c9(c)),
+        RecolorBy(_, m) => m.iter().all(|&c| c9(c)),
+        _ => true,
+    }
+}
+
 /// 항 → 연산(역연산). 인자 개수·범위가 맞지 않으면 None.
 pub fn term_to_op(t: &Term) -> Option<GridOp> {
     use GridOp::*;
@@ -122,7 +170,7 @@ pub fn term_to_op(t: &Term) -> Option<GridOp> {
         }
         Some(m)
     };
-    Some(match tag {
+    let op = match tag {
         0 => FillEnclosed(a(0)?),
         1 => SymFillH,
         2 => SymFillV,
@@ -169,7 +217,12 @@ pub fn term_to_op(t: &Term) -> Option<GridOp> {
         43 => MirrorHGrid,
         44 => MirrorVGrid,
         _ => return None,
-    })
+    };
+    if color_ok(&op) {
+        Some(op)
+    } else {
+        None
+    }
 }
 
 /// 연쇄 ↔ 항.
@@ -349,13 +402,9 @@ pub fn reinstantiate(
             let filled = schema.substitute(&b);
             if let Some(ops) = term_to_chain(&filled) {
                 let ok = !ops.is_empty()
-                    && train.iter().all(|(i, o)| {
-                        let mut g = i.clone();
-                        for op in &ops {
-                            g = apply_grid_op(&g, *op);
-                        }
-                        &g == o
-                    });
+                    && train
+                        .iter()
+                        .all(|(i, o)| safe_chain(i, &ops).as_ref() == Some(o));
                 if ok {
                     rep.hits += 1;
                     lib.entries[ix].wins = lib.entries[ix].wins.saturating_add(1);
@@ -377,6 +426,132 @@ pub fn reinstantiate(
             }
             if carry == vars.len() {
                 break;
+            }
+        }
+    }
+    (None, rep)
+}
+
+/// 한 스키마의 모든 대입을 훑어, 훈련쌍에 적용한 **중간 결과**를 돌려준다.
+/// (합성의 1단계 — 잔차를 만들어 다음 스키마에 넘긴다.)
+fn instantiations(
+    lib: &Library,
+    ix: usize,
+    train: &[(Grid, Grid)],
+    palette: &[u8],
+    dims: &[u8],
+    cap: usize,
+) -> Vec<(Vec<GridOp>, Vec<Grid>)> {
+    let schema = lib.entries[ix].schema.clone();
+    let vars = schema.vars();
+    if vars.len() > 2 {
+        return Vec::new();
+    }
+    let cand: Vec<Vec<Term>> = vars
+        .iter()
+        .map(|&v| candidates(lib, ix, v, palette, dims))
+        .collect();
+    let mut out = Vec::new();
+    let mut idx = vec![0usize; vars.len()];
+    loop {
+        if out.len() >= cap {
+            break;
+        }
+        let mut b: HashMap<u32, Term> = HashMap::new();
+        for (vi, &v) in vars.iter().enumerate() {
+            b.insert(v, cand[vi][idx[vi]].clone());
+        }
+        if let Some(ops) = term_to_chain(&schema.substitute(&b)) {
+            if !ops.is_empty() {
+                let mids: Option<Vec<Grid>> =
+                    train.iter().map(|(i, _)| safe_chain(i, &ops)).collect();
+                // 아무것도 바꾸지 않는 대입은 합성에 무의미(자원 초과분도 제외)
+                if let Some(mids) = mids {
+                    if mids.iter().zip(train.iter()).any(|(m, (i, _))| m != i) {
+                        out.push((ops, mids));
+                    }
+                }
+            }
+        }
+        let mut carry = 0usize;
+        while carry < vars.len() {
+            idx[carry] += 1;
+            if idx[carry] < cand[carry].len() {
+                break;
+            }
+            idx[carry] = 0;
+            carry += 1;
+        }
+        if carry == vars.len() {
+            break;
+        }
+    }
+    out
+}
+
+/// **스키마 합성**(자기학습 루프의 5단계): 스키마 하나로 안 닫히면 둘을 잇는다.
+///
+/// 기저 솔버의 연쇄 탐색은 **탐욕적**(각 단계에서 첫 적합만 채택)이라 조합을
+/// 놓친다. 여기서는 A의 각 대입이 만든 **잔차**(중간 격자 → 정답)에 대해 B를
+/// 다시 찾는다 — 기저가 구조적으로 못 훑는 공간이다.
+pub fn reinstantiate_compose(
+    lib: &mut Library,
+    train: &[(Grid, Grid)],
+    budget: u32,
+) -> (Option<Vec<GridOp>>, ReuseReport) {
+    let mut rep = ReuseReport::default();
+    let mut palette: Vec<u8> = Vec::new();
+    for (i, o) in train {
+        for g in [i, o] {
+            for &v in &g.cells {
+                if !palette.contains(&v) {
+                    palette.push(v);
+                }
+            }
+        }
+    }
+    palette.sort_unstable();
+    let dims: Vec<u8> = train
+        .first()
+        .map(|(i, o)| {
+            vec![i.w.min(255) as u8, i.h.min(255) as u8, o.w.min(255) as u8, o.h.min(255) as u8]
+        })
+        .unwrap_or_default();
+
+    let order = lib.by_prior();
+    for &ia in &order {
+        if rep.probes >= budget {
+            break;
+        }
+        let firsts = instantiations(lib, ia, train, &palette, &dims, 24);
+        for (ops_a, mids) in firsts {
+            if rep.probes >= budget {
+                break;
+            }
+            // 잔차: (중간, 정답) — 여기에 두 번째 스키마를 찾는다
+            let residual: Vec<(Grid, Grid)> = mids
+                .iter()
+                .cloned()
+                .zip(train.iter().map(|(_, o)| o.clone()))
+                .collect();
+            for &ib in &order {
+                if rep.probes >= budget {
+                    break;
+                }
+                rep.tries += 1;
+                let seconds = instantiations(lib, ib, &residual, &palette, &dims, 24);
+                for (ops_b, outs) in seconds {
+                    rep.probes += 1;
+                    if outs.iter().zip(train.iter()).all(|(g, (_, o))| g == o) {
+                        rep.hits += 1;
+                        lib.entries[ia].wins = lib.entries[ia].wins.saturating_add(1);
+                        lib.entries[ib].wins = lib.entries[ib].wins.saturating_add(1);
+                        rep.novel += 1; // 합성은 정의상 경험에 없던 구성
+                        let mut ops = ops_a.clone();
+                        ops.extend(ops_b);
+                        return (Some(ops), rep);
+                    }
+                }
             }
         }
     }
@@ -459,6 +634,54 @@ mod tests {
         assert_eq!(rep.hits, 1);
         assert_eq!(rep.novel, 1, "경험에 없던 대입이어야 한다");
         assert_eq!(lib.entries[0].wins, 1, "성공 이력이 기록돼야 한다");
+    }
+
+    /// **합성 시험**: 경험에 각각 따로 있던 두 스키마를 이어 붙여, 어느 하나로도
+    /// 못 푸는 문제를 푼다(자기학습 루프 5단계).
+    #[test]
+    fn composition_solves_what_single_schemas_cannot() {
+        // 경험: 회전 계열과 색 제거 계열이 따로 있었다
+        let exp = vec![
+            ("a".into(), chain_to_term(&[GridOp::RemoveColor(1)])),
+            ("b".into(), chain_to_term(&[GridOp::RemoveColor(2)])),
+            ("c".into(), chain_to_term(&[GridOp::Scale(2)])),
+            ("d".into(), chain_to_term(&[GridOp::Scale(3)])),
+        ];
+        let mut lib = Library::new();
+        sleep_abstract(&exp, &mut lib);
+
+        // 새 문제: 색 3을 지우고 2배 확대 — 어느 한 스키마로도 못 닫는다
+        let mk = |cells: &[(usize, usize, u8)]| {
+            let mut g = Grid::new(3, 3);
+            for &(x, y, c) in cells {
+                g.set(x, y, c);
+            }
+            g
+        };
+        let prog = [GridOp::RemoveColor(3), GridOp::Scale(2)];
+        let i1 = mk(&[(0, 0, 5), (1, 1, 3), (2, 2, 5)]);
+        let i2 = mk(&[(0, 2, 4), (1, 0, 3)]);
+        let out = |g: &Grid| {
+            let mut x = g.clone();
+            for op in &prog {
+                x = apply_grid_op(&x, *op);
+            }
+            x
+        };
+        let train = vec![(i1.clone(), out(&i1)), (i2.clone(), out(&i2))];
+
+        let (single, _) = reinstantiate(&mut lib, &train, 20_000);
+        assert!(single.is_none(), "단일 스키마로 풀리면 합성 시험이 무의미하다");
+
+        let (composed, rep) = reinstantiate_compose(&mut lib, &train, 200_000);
+        let ops = composed.expect("합성으로도 못 풀었다");
+        let t = mk(&[(2, 0, 3), (0, 1, 7)]);
+        let mut got = t.clone();
+        for op in &ops {
+            got = apply_grid_op(&got, *op);
+        }
+        assert_eq!(got, out(&t), "합성 프로그램이 시험에서 틀렸다");
+        assert!(rep.hits >= 1 && rep.novel >= 1);
     }
 
     /// 성공 이력이 다음 탐색의 순서를 바꾼다(탐색 감소의 기전).

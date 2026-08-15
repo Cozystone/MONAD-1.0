@@ -22,9 +22,11 @@
 
 pub mod abstraction;
 pub mod atom;
+pub mod constraint;
 pub mod dream;
 pub mod encode;
 pub mod graph;
+pub mod representation;
 pub mod rng;
 pub mod sbv;
 pub mod schema;
@@ -33,6 +35,8 @@ pub mod store;
 pub mod wake;
 
 pub use abstraction::{generalize, lgg, Abstraction, Library, Provenance, Term};
+pub use constraint::{Budget, Constraints, Cost, Domain, Growth, OpSpec, Violation};
+pub use representation::{RepCandidate, RepLibrary, RepScore};
 pub use atom::{Atom, Val};
 pub use dream::{dream, DreamConfig, DreamReport};
 pub use encode::{Encoder, Feature, Obs, Vocab};

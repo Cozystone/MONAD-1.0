@@ -502,10 +502,20 @@ fn main() {
             }
             let train: Vec<_> =
                 task.train.iter().map(|p| (p.input.clone(), p.output.clone())).collect();
-            let (ops, rep) = monad_envs::arc_experience::reinstantiate(&mut lib, &train, 20_000);
+            let (mut ops, rep) =
+                monad_envs::arc_experience::reinstantiate(&mut lib, &train, 20_000);
             reuse_tries += rep.tries;
             reuse_novel += rep.novel;
             reuse_probes += rep.probes;
+            // 5단계: 하나로 안 닫히면 **스키마 합성**(기저의 탐욕 연쇄가 못 훑는 공간)
+            if ops.is_none() {
+                let (c, rep2) =
+                    monad_envs::arc_experience::reinstantiate_compose(&mut lib, &train, 60_000);
+                reuse_tries += rep2.tries;
+                reuse_novel += rep2.novel;
+                reuse_probes += rep2.probes;
+                ops = c;
+            }
             if let Some(ops) = ops {
                 let all_ok = task.test.iter().all(|p| {
                     monad_envs::arc_solve::apply_grid_chain_n(&p.input, &ops) == p.output
