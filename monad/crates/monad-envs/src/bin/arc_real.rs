@@ -30,6 +30,9 @@ fn main() {
     let lib_path = std::env::var("MONAD_ARC_LIB")
         .unwrap_or_else(|_| "C:\\0.ASKIM ALL-VIN\\31.Homage AI\\monad-library.tsv".into());
     let record_exp = std::env::var("MONAD_ARC_RECORD").is_ok();
+    // 부분 진전 저널 — 교사가 버리는 정보(닫지 못했으나 잔차를 줄인 시도)의 축적소
+    let partial_path = std::env::var("MONAD_ARC_PARTIAL")
+        .unwrap_or_else(|_| "C:\\0.ASKIM ALL-VIN\\31.Homage AI\\monad-partial.tsv".into());
 
     let mut same_size = 0usize;
     let mut skipped = 0usize;
@@ -496,6 +499,13 @@ fn main() {
     let lib_before = lib.entries.len();
     if lib_before > 0 && ablate != "monad" {
         let t_reuse = std::time::Instant::now();
+        let mut partial_found = 0usize;
+        let mut partial_gain = 0f64;
+        let mut partial_corrected = 0usize;
+        let mut partial_damaged = 0usize;
+        let mut partial_precision = 0f64;
+        let mut residual_closed = 0usize;
+        let mut residual_closed_tries = 0usize;
         for task in &tasks {
             if solved_names.contains(&task.name) {
                 continue;
@@ -507,14 +517,92 @@ fn main() {
             reuse_tries += rep.tries;
             reuse_novel += rep.novel;
             reuse_probes += rep.probes;
-            // 5단계: 하나로 안 닫히면 **스키마 합성**(기저의 탐욕 연쇄가 못 훑는 공간)
+            // 5단계: 하나로 안 닫히면 **합성**. 맹목 열거 대신 **부분 진전 경험**이
+            // 1단계를 골라준다 — 교사가 버리는 정보(닫지 못했지만 잔차를 줄인 시도)가
+            // 탐색 공간을 줄이는 지점(시도 151, 단위 시험에서 검사 횟수 감소 실증).
             if ops.is_none() {
-                let (c, rep2) =
-                    monad_envs::arc_experience::reinstantiate_compose(&mut lib, &train, 60_000);
-                reuse_tries += rep2.tries;
-                reuse_novel += rep2.novel;
-                reuse_probes += rep2.probes;
-                ops = c;
+                if let Some((seed, base, after, prof)) =
+                    monad_envs::arc_experience::probe_partial(&lib, &train, 8_000)
+                {
+                    partial_found += 1;
+                    partial_gain += base - after;
+                    partial_corrected += prof.corrected;
+                    partial_damaged += prof.damaged;
+                    partial_precision += prof.precision();
+                    // **부분 진전을 효과 프로파일과 함께 남긴다** — 잔차 비율만으로는
+                    // "고치면서 망가뜨리는 도구"와 "조용히 고치는 도구"가 구별되지
+                    // 않는다. 수면이 부분 목표 스키마를 만들려면 그 구분이 필요하다.
+                    monad_envs::arc_experience::append_experience(
+                        &partial_path,
+                        &format!(
+                            "P:{}:d{:.3}:c{}:x{}:p{:.2}",
+                            task.name,
+                            base - after,
+                            prof.corrected,
+                            prof.damaged,
+                            prof.precision()
+                        ),
+                        &monad_envs::arc_experience::chain_to_term(&seed),
+                    );
+                    let (c, rep2) = monad_envs::arc_experience::compose_guided(
+                        &mut lib,
+                        &train,
+                        &[seed],
+                        40_000,
+                    );
+                    reuse_tries += rep2.tries;
+                    reuse_novel += rep2.novel;
+                    reuse_probes += rep2.probes;
+                    ops = c;
+                }
+                // **anytime 일반화 합성**: 깊이 고정을 풀고 잔차 유도 최선우선으로
+                // (정규형 메모이제이션·진전 시에만 확장·학습된 사전분포 순).
+                if ops.is_none() {
+                    let (c, rep3) =
+                        monad_envs::arc_experience::compose_anytime(&mut lib, &train, 40_000, 4);
+                    reuse_tries += rep3.tries;
+                    reuse_novel += rep3.novel;
+                    reuse_probes += rep3.probes;
+                    ops = c;
+                }
+                // **잔차 닫기(개념 학습)** — oracle 진단(시도 154)의 처방.
+                // 조합만으로는 도달 불가(40/40 단조 경로 소진)이므로, 부분 진전이
+                // 남긴 작고 구조화된 잔차 위에서 **규칙을 새로 학습**한다. 손으로
+                // 쓰는 것이 아니라 데이터에서 만든다 — 기존 학습 기계를 **새 위치**
+                // 에서 돌리는 것이며, 성공 시 그 규칙은 MONAD_DERIVED다.
+                if ops.is_none() {
+                    if let Some((seed2, _, _, _)) =
+                        monad_envs::arc_experience::probe_partial(&lib, &train, 8_000)
+                    {
+                        let mids: Option<Vec<monad_envs::grid::Grid>> = train
+                            .iter()
+                            .map(|(i, _)| monad_envs::arc_experience::safe_chain(i, &seed2))
+                            .collect();
+                        if let Some(mids) = mids {
+                            let resid: Vec<_> = mids
+                                .into_iter()
+                                .zip(train.iter().map(|(_, o)| o.clone()))
+                                .collect();
+                            residual_closed_tries += 1;
+                            let all_ok = task.test.iter().all(|p| {
+                                match monad_envs::arc_experience::safe_chain(&p.input, &seed2) {
+                                    Some(mid) => {
+                                        monad_envs::arc_ebm::ebm_solve(&resid, &mid)
+                                            == Some(p.output.clone())
+                                    }
+                                    None => false,
+                                }
+                            });
+                            if all_ok {
+                                residual_closed += 1;
+                                reuse_solved += 1;
+                                solved += 1;
+                                solved_names.push(task.name.clone());
+                                continue;
+                            }
+                        }
+                    }
+                }
             }
             if let Some(ops) = ops {
                 let all_ok = task.test.iter().all(|p| {
@@ -544,6 +632,28 @@ fn main() {
             lib.reuse_rate(),
             lib.compression(),
             if reuse_solved > 0 { reuse_novel as f64 / reuse_solved as f64 } else { 0.0 }
+        );
+        println!(
+            "  부분 진전 경험 {}건 · 평균 잔차 감소 {:.3} (교사가 버리는 정보의 회수량)",
+            partial_found,
+            if partial_found > 0 { partial_gain / partial_found as f64 } else { 0.0 }
+        );
+        println!(
+            "  효과 프로파일: 고친 셀 {} · 망가뜨린 셀 {} · 평균 정밀도 {:.2} \
+             (부분 목표 스키마의 재료)",
+            partial_corrected,
+            partial_damaged,
+            if partial_found > 0 { partial_precision / partial_found as f64 } else { 0.0 }
+        );
+        println!(
+            "  잔차 닫기(개념 학습): 시도 {}건 → **해결 {}건** (조합 불가 영역의 돌파 여부)",
+            residual_closed_tries, residual_closed
+        );
+        // 해결 목록을 남긴다 — oracle 진단기가 미해결 집합을 알아야 한다
+        let _ = std::fs::write(
+            std::env::var("MONAD_ARC_SOLVED")
+                .unwrap_or_else(|_| "C:\\0.ASKIM ALL-VIN\\31.Homage AI\\monad-solved.txt".into()),
+            solved_names.join("\n"),
         );
     }
 

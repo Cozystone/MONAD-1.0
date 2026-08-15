@@ -44,3 +44,7 @@ path = "src/bin/arc_sleep.rs"
 [[bin]]
 name = "arc-real"
 path = "src/bin/arc_real.rs"
+
+[[bin]]
+name = "arc-oracle"
+path = "src/bin/arc_oracle.rs"

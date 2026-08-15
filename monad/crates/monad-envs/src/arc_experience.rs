@@ -558,6 +558,422 @@ pub fn reinstantiate_compose(
     (None, rep)
 }
 
+/// 잔차 = 훈련쌍 전체의 셀 불일치 비율(크기가 다르면 완전 불일치로 본다).
+/// 교사는 이 값이 0인 경우만 성공으로 세고 나머지를 버린다 — 우리는 남긴다.
+pub fn residual(train: &[(Grid, Grid)], ops: &[GridOp]) -> f64 {
+    let mut bad = 0usize;
+    let mut total = 0usize;
+    for (i, o) in train {
+        let g = match safe_chain(i, ops) {
+            Some(g) => g,
+            None => return 1.0,
+        };
+        total += o.cells.len();
+        if g.w != o.w || g.h != o.h {
+            bad += o.cells.len();
+        } else {
+            bad += g.cells.iter().zip(o.cells.iter()).filter(|(a, b)| a != b).count();
+        }
+    }
+    if total == 0 {
+        1.0
+    } else {
+        bad as f64 / total as f64
+    }
+}
+
+/// **부분 진전 경험**: 문제를 닫지는 못했지만 잔차를 줄인 스키마 대입.
+///
+/// 교사(동결 솔버)는 정확 재현만 성공으로 치고 나머지를 폐기한다. 그래서 교사의
+/// 성공만 기록하면 학생의 가설 공간은 교사의 탐색 공간을 넘지 못한다(시도 150의
+/// 인수분해). 여기서는 **실패했지만 진전한 시도**를 남긴다 — 이것이 교사가
+/// 탐욕적 첫-적합 때문에 영영 조합해 보지 않는 부분해들의 원료다.
+///
+/// 반환: (연산열, 원래 잔차, 줄어든 잔차, **효과 프로파일**) — 개선이 없으면 None.
+///
+/// 효과 프로파일이 함께 나오는 이유: 잔차 비율 하나로는 "많이 고치고 조금
+/// 망가뜨림"과 "조용히 고침"이 구별되지 않는다. 수면이 **부분 목표 스키마**
+/// ("이 도구는 이런 잔차를 없앤다")를 만들려면 그 구분이 필요하다.
+pub fn probe_partial(
+    lib: &Library,
+    train: &[(Grid, Grid)],
+    budget: u32,
+) -> Option<(Vec<GridOp>, f64, f64, EffectProfile)> {
+    let base = residual(train, &[]);
+    if base <= 0.0 {
+        return None;
+    }
+    let mut palette: Vec<u8> = Vec::new();
+    for (i, o) in train {
+        for g in [i, o] {
+            for &v in &g.cells {
+                if !palette.contains(&v) {
+                    palette.push(v);
+                }
+            }
+        }
+    }
+    palette.sort_unstable();
+    let dims: Vec<u8> = train
+        .first()
+        .map(|(i, o)| {
+            vec![i.w.min(255) as u8, i.h.min(255) as u8, o.w.min(255) as u8, o.h.min(255) as u8]
+        })
+        .unwrap_or_default();
+
+    let mut best: Option<(Vec<GridOp>, f64)> = None;
+    let mut used = 0u32;
+    for ix in lib.by_prior() {
+        if used >= budget {
+            break;
+        }
+        for (ops, _) in instantiations(lib, ix, train, &palette, &dims, 16) {
+            used += 1;
+            if used >= budget {
+                break;
+            }
+            let r = residual(train, &ops);
+            // 유의미한 진전만(잡음 방지: 5% 이상 감소)
+            if r < base * 0.95 && best.as_ref().map(|(_, br)| r < *br).unwrap_or(true) {
+                best = Some((ops, r));
+            }
+        }
+    }
+    best.map(|(ops, r)| {
+        let before: Vec<Grid> = train.iter().map(|(i, _)| i.clone()).collect();
+        let after: Vec<Grid> = train
+            .iter()
+            .map(|(i, _)| safe_chain(i, &ops).unwrap_or_else(|| i.clone()))
+            .collect();
+        let prof = effect_profile(train, &before, &after);
+        (ops, base, r, prof)
+    })
+}
+
+/// **유도 합성**: 부분 진전이 확인된 연산열을 1단계로 고정하고 마무리만 찾는다.
+///
+/// 맹목 합성(모든 스키마 × 모든 스키마)과 달리, 1단계 후보가 "잔차를 줄인다"는
+/// 증거로 이미 걸러져 있다. 이것이 **경험이 탐색 공간을 줄이는** 지점이다.
+pub fn compose_guided(
+    lib: &mut Library,
+    train: &[(Grid, Grid)],
+    seeds: &[Vec<GridOp>],
+    budget: u32,
+) -> (Option<Vec<GridOp>>, ReuseReport) {
+    let mut rep = ReuseReport::default();
+    let mut palette: Vec<u8> = Vec::new();
+    for (i, o) in train {
+        for g in [i, o] {
+            for &v in &g.cells {
+                if !palette.contains(&v) {
+                    palette.push(v);
+                }
+            }
+        }
+    }
+    palette.sort_unstable();
+    let dims: Vec<u8> = train
+        .first()
+        .map(|(i, o)| {
+            vec![i.w.min(255) as u8, i.h.min(255) as u8, o.w.min(255) as u8, o.h.min(255) as u8]
+        })
+        .unwrap_or_default();
+
+    let order = lib.by_prior();
+    for seed in seeds {
+        if rep.probes >= budget {
+            break;
+        }
+        // 1단계를 적용한 잔차 상태
+        let mids: Option<Vec<Grid>> = train.iter().map(|(i, _)| safe_chain(i, seed)).collect();
+        let Some(mids) = mids else { continue };
+        let residual_pairs: Vec<(Grid, Grid)> = mids
+            .into_iter()
+            .zip(train.iter().map(|(_, o)| o.clone()))
+            .collect();
+        for &ib in &order {
+            if rep.probes >= budget {
+                break;
+            }
+            rep.tries += 1;
+            for (ops_b, outs) in instantiations(lib, ib, &residual_pairs, &palette, &dims, 24) {
+                rep.probes += 1;
+                if outs.iter().zip(train.iter()).all(|(g, (_, o))| g == o) {
+                    rep.hits += 1;
+                    rep.novel += 1;
+                    lib.entries[ib].wins = lib.entries[ib].wins.saturating_add(1);
+                    let mut ops = seed.clone();
+                    ops.extend(ops_b);
+                    return (Some(ops), rep);
+                }
+            }
+        }
+    }
+    (None, rep)
+}
+
+/// 중간 상태의 정규형 지문 — **같은 결과를 내는 서로 다른 연산열은 같은 상태**다.
+/// 이것이 "동일 효과 스키마의 정규화"이자 실패 조합 메모이제이션의 키가 된다.
+fn state_key(mids: &[Grid]) -> u64 {
+    let mut h = 0xcbf29ce484222325u64;
+    for g in mids {
+        h = h.wrapping_mul(0x100000001b3) ^ g.w as u64;
+        h = h.wrapping_mul(0x100000001b3) ^ g.h as u64;
+        for &c in &g.cells {
+            h = h.wrapping_mul(0x100000001b3) ^ c as u64;
+        }
+    }
+    h
+}
+
+/// 잔차(불일치 비율)를 중간 상태에서 직접 잰다.
+fn residual_mids(mids: &[Grid], train: &[(Grid, Grid)]) -> f64 {
+    let mut bad = 0usize;
+    let mut total = 0usize;
+    for (g, (_, o)) in mids.iter().zip(train.iter()) {
+        total += o.cells.len();
+        if g.w != o.w || g.h != o.h {
+            bad += o.cells.len();
+        } else {
+            bad += g.cells.iter().zip(o.cells.iter()).filter(|(a, b)| a != b).count();
+        }
+    }
+    if total == 0 {
+        1.0
+    } else {
+        bad as f64 / total as f64
+    }
+}
+
+/// 한 연산이 잔차에 **무엇을 했는가** — 고친 셀과 망가뜨린 셀을 나눠 본다.
+///
+/// 잔차 비율 하나로는 "70칸 고치고 15칸 망가뜨림"과 "55칸 조용히 고침"이 같아
+/// 보인다. 둘은 전혀 다른 도구다. 이 구분이 있어야 수면이 **부분 목표 스키마**
+/// ("이 도구는 이런 종류의 잔차를 없앤다")를 만들 수 있다.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct EffectProfile {
+    /// 틀렸던 셀이 맞게 된 수.
+    pub corrected: usize,
+    /// 맞았던 셀이 틀리게 된 수(부작용).
+    pub damaged: usize,
+    /// 적용 전 틀린 셀 수.
+    pub before_wrong: usize,
+    /// 적용 후 틀린 셀 수.
+    pub after_wrong: usize,
+}
+
+impl EffectProfile {
+    pub fn net(&self) -> i64 {
+        self.corrected as i64 - self.damaged as i64
+    }
+    /// 부작용 없이 고치는 도구인가(정밀도) — 부분 목표 스키마의 핵심 성질.
+    pub fn precision(&self) -> f64 {
+        let t = self.corrected + self.damaged;
+        if t == 0 {
+            0.0
+        } else {
+            self.corrected as f64 / t as f64
+        }
+    }
+}
+
+/// 적용 전/후 상태를 정답과 대조해 효과를 분해한다.
+pub fn effect_profile(
+    train: &[(Grid, Grid)],
+    before: &[Grid],
+    after: &[Grid],
+) -> EffectProfile {
+    let mut p = EffectProfile::default();
+    for ((b, a), (_, o)) in before.iter().zip(after.iter()).zip(train.iter()) {
+        for y in 0..o.h {
+            for x in 0..o.w {
+                let want = o.get(x, y);
+                let had = if b.w == o.w && b.h == o.h { Some(b.get(x, y)) } else { None };
+                let now = if a.w == o.w && a.h == o.h { Some(a.get(x, y)) } else { None };
+                let was_wrong = had != Some(want);
+                let is_wrong = now != Some(want);
+                if was_wrong {
+                    p.before_wrong += 1;
+                }
+                if is_wrong {
+                    p.after_wrong += 1;
+                }
+                match (was_wrong, is_wrong) {
+                    (true, false) => p.corrected += 1,
+                    (false, true) => p.damaged += 1,
+                    _ => {}
+                }
+            }
+        }
+    }
+    p
+}
+
+/// 탐색이 멈춘 이유 — **네 가지 병목을 분리**하는 진단의 핵심.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StopReason {
+    /// 정답에 도달(현 라이브러리로 표현 가능하며 찾았다).
+    Solved,
+    /// 확장할 가지가 소진 — 이 깊이에서 **단조 진전 경로로는 도달 불가**.
+    /// (일시적 악화를 거치는 경로는 배제되므로 "표현 불가"의 증거이지 증명은 아니다.)
+    FrontierExhausted,
+    /// 예산 소진 — 도달 가능성은 미정(탐색 병목 가능).
+    BudgetExhausted,
+}
+
+/// 탐색의 진단 보고 — 무엇이 막혔는지 말한다.
+#[derive(Clone, Debug)]
+pub struct SearchReport {
+    pub stop: StopReason,
+    /// 도달한 최선 잔차(0이면 해결).
+    pub best_residual: f64,
+    /// 최선 상태까지의 연산열.
+    pub best_ops: Vec<GridOp>,
+    pub reuse: ReuseReport,
+    /// 방문한 서로 다른 상태 수(정규형 기준).
+    pub states: usize,
+}
+
+/// **일반화된 스키마 합성** — anytime 최선 우선 탐색.
+///
+/// 고정 깊이 2가 아니라, 예산이 허락하는 만큼 깊어진다. 규율:
+///
+/// - **잔차가 실제로 줄 때만** 확장한다(진전 없는 가지는 죽는다)
+/// - **정규형 메모이제이션**: 같은 중간 상태에 도달하는 다른 경로는 한 번만 본다
+///   (동일 효과 스키마가 자동으로 하나로 접힌다)
+/// - **학습된 사전분포** 순으로 스키마를 시도한다(유망한 것 먼저)
+/// - 도메인·자원 가드는 항상 켜져 있다(`safe_chain`)
+///
+/// 목표는 깊이를 늘리는 것이 아니라 **경험이 탐색을 줄이는 것**이다 — 라이브러리가
+/// 좋아질수록 같은 예산에서 더 깊이 간다.
+pub fn compose_anytime(
+    lib: &mut Library,
+    train: &[(Grid, Grid)],
+    budget: u32,
+    max_depth: usize,
+) -> (Option<Vec<GridOp>>, ReuseReport) {
+    let r = search_report(lib, train, budget, max_depth);
+    let ops = if r.stop == StopReason::Solved { Some(r.best_ops) } else { None };
+    (ops, r.reuse)
+}
+
+/// 위와 같은 탐색이되 **왜 멈췄는지**까지 보고한다(병목 진단용).
+pub fn search_report(
+    lib: &mut Library,
+    train: &[(Grid, Grid)],
+    budget: u32,
+    max_depth: usize,
+) -> SearchReport {
+    let mut rep = ReuseReport::default();
+    let mut palette: Vec<u8> = Vec::new();
+    for (i, o) in train {
+        for g in [i, o] {
+            for &v in &g.cells {
+                if !palette.contains(&v) {
+                    palette.push(v);
+                }
+            }
+        }
+    }
+    palette.sort_unstable();
+    let dims: Vec<u8> = train
+        .first()
+        .map(|(i, o)| {
+            vec![i.w.min(255) as u8, i.h.min(255) as u8, o.w.min(255) as u8, o.h.min(255) as u8]
+        })
+        .unwrap_or_default();
+
+    let start: Vec<Grid> = train.iter().map(|(i, _)| i.clone()).collect();
+    let r0 = residual_mids(&start, train);
+    if r0 <= 0.0 {
+        return SearchReport {
+            stop: StopReason::Solved,
+            best_residual: 0.0,
+            best_ops: Vec::new(),
+            reuse: rep,
+            states: 1,
+        };
+    }
+    // 최선 상태 추적(해결 못 해도 어디까지 갔는지 보고한다)
+    let mut best: (f64, Vec<GridOp>) = (r0, Vec::new());
+    let mut budget_hit = false;
+    // 최선 우선 변경자: (잔차, 연산열, 중간 상태)
+    let mut frontier: Vec<(f64, Vec<GridOp>, Vec<Grid>)> = vec![(r0, Vec::new(), start.clone())];
+    let mut seen: std::collections::HashSet<u64> = Default::default();
+    seen.insert(state_key(&start));
+    let order = lib.by_prior();
+
+    while let Some(pos) = frontier
+        .iter()
+        .enumerate()
+        .min_by(|a, b| a.1 .0.partial_cmp(&b.1 .0).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(i, _)| i)
+    {
+        if rep.probes >= budget {
+            budget_hit = true;
+            break;
+        }
+        let (cur_r, cur_ops, cur_mids) = frontier.swap_remove(pos);
+        if cur_ops.len() >= max_depth {
+            continue;
+        }
+        // 현 잔차 상태를 새 훈련 문제로 보고, 라이브러리를 다시 적용한다
+        let sub: Vec<(Grid, Grid)> = cur_mids
+            .iter()
+            .cloned()
+            .zip(train.iter().map(|(_, o)| o.clone()))
+            .collect();
+        for &ix in &order {
+            if rep.probes >= budget {
+                budget_hit = true;
+                break;
+            }
+            rep.tries += 1;
+            for (ops, mids) in instantiations(lib, ix, &sub, &palette, &dims, 12) {
+                rep.probes += 1;
+                let key = state_key(&mids);
+                if !seen.insert(key) {
+                    continue; // 이미 본 상태(정규형 중복·실패 조합)
+                }
+                let r = residual_mids(&mids, train);
+                let mut next_ops = cur_ops.clone();
+                next_ops.extend(ops);
+                if r <= 0.0 {
+                    rep.hits += 1;
+                    rep.novel += 1;
+                    lib.entries[ix].wins = lib.entries[ix].wins.saturating_add(1);
+                    let states = seen.len();
+                    return SearchReport {
+                        stop: StopReason::Solved,
+                        best_residual: 0.0,
+                        best_ops: next_ops,
+                        reuse: rep,
+                        states,
+                    };
+                }
+                if r < best.0 {
+                    best = (r, next_ops.clone());
+                }
+                // **진전이 있을 때만** 확장한다
+                if r < cur_r - 1e-9 {
+                    frontier.push((r, next_ops, mids));
+                }
+            }
+        }
+    }
+    SearchReport {
+        stop: if budget_hit {
+            StopReason::BudgetExhausted
+        } else {
+            StopReason::FrontierExhausted
+        },
+        best_residual: best.0,
+        best_ops: best.1,
+        states: seen.len(),
+        reuse: rep,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -681,6 +1097,108 @@ mod tests {
             got = apply_grid_op(&got, *op);
         }
         assert_eq!(got, out(&t), "합성 프로그램이 시험에서 틀렸다");
+        assert!(rep.hits >= 1 && rep.novel >= 1);
+    }
+
+    /// **부분 진전 경험 + 유도 합성**: 교사가 버리는 정보(닫지 못했지만 진전한
+    /// 시도)가 탐색 공간을 실제로 줄인다 — 맹목 합성 대비 검사 횟수 비교.
+    #[test]
+    fn partial_progress_guides_composition_and_reduces_search() {
+        let exp = vec![
+            ("a".into(), chain_to_term(&[GridOp::RemoveColor(1)])),
+            ("b".into(), chain_to_term(&[GridOp::RemoveColor(2)])),
+            ("c".into(), chain_to_term(&[GridOp::Scale(2)])),
+            ("d".into(), chain_to_term(&[GridOp::Scale(3)])),
+        ];
+        let mut lib = Library::new();
+        sleep_abstract(&exp, &mut lib);
+
+        let mk = |cells: &[(usize, usize, u8)]| {
+            let mut g = Grid::new(3, 3);
+            for &(x, y, c) in cells {
+                g.set(x, y, c);
+            }
+            g
+        };
+        let prog = [GridOp::RemoveColor(3), GridOp::Scale(2)];
+        let out = |g: &Grid| {
+            let mut x = g.clone();
+            for op in &prog {
+                x = apply_grid_op(&x, *op);
+            }
+            x
+        };
+        let i1 = mk(&[(0, 0, 5), (1, 1, 3), (2, 2, 5)]);
+        let i2 = mk(&[(0, 2, 4), (1, 0, 3)]);
+        let train = vec![(i1.clone(), out(&i1)), (i2.clone(), out(&i2))];
+
+        // 부분 진전: 잔차를 줄이는 대입이 발견된다(닫지는 못한다)
+        let (seed, base, after, prof) = probe_partial(&lib, &train, 10_000).expect("진전 없음");
+        assert!(after < base, "잔차가 줄지 않았다 {base} → {after}");
+        // 효과 프로파일: 무엇을 고쳤고 무엇을 망가뜨렸는지가 분해돼 있어야 한다
+        assert!(prof.corrected > 0, "고친 셀이 없는데 진전이라고 보고했다");
+        assert!(prof.net() > 0, "순이득이 없다: 고침 {} 망침 {}", prof.corrected, prof.damaged);
+        assert!(prof.precision() > 0.0 && prof.precision() <= 1.0);
+        assert!(residual(&train, &seed) > 0.0, "이것은 이미 완전해다 — 부분해가 아니다");
+
+        // 유도 합성이 그 씨앗에서 마무리를 찾는다
+        let (guided, grep) = compose_guided(&mut lib, &train, &[seed], 100_000);
+        let ops = guided.expect("유도 합성 실패");
+        let t = mk(&[(2, 0, 3), (0, 1, 7)]);
+        assert_eq!(safe_chain(&t, &ops).unwrap(), out(&t), "시험에서 틀렸다");
+
+        // 탐색 감소: 맹목 합성보다 적은 검사로 도달
+        let mut lib2 = Library::new();
+        sleep_abstract(&exp, &mut lib2);
+        let (blind, brep) = reinstantiate_compose(&mut lib2, &train, 200_000);
+        assert!(blind.is_some(), "맹목 합성도 풀 수 있어야 비교가 성립한다");
+        assert!(
+            grep.probes < brep.probes,
+            "경험이 탐색을 줄이지 못했다: 유도 {} vs 맹목 {}",
+            grep.probes,
+            brep.probes
+        );
+    }
+
+    /// **일반화 합성(anytime)**: 3단계 프로그램을 잔차 유도 최선우선으로 찾는다.
+    /// 고정 깊이 2로는 못 닫는 문제를 예산만 늘려 닫는다 — 그리고 정규형
+    /// 메모이제이션이 같은 상태의 재방문을 막는다.
+    #[test]
+    fn anytime_composition_reaches_depth_three() {
+        let exp = vec![
+            ("a".into(), chain_to_term(&[GridOp::RemoveColor(1)])),
+            ("b".into(), chain_to_term(&[GridOp::RemoveColor(2)])),
+            ("c".into(), chain_to_term(&[GridOp::Scale(2)])),
+            ("d".into(), chain_to_term(&[GridOp::Scale(3)])),
+            ("e".into(), chain_to_term(&[GridOp::MirrorHGrid])),
+            ("f".into(), chain_to_term(&[GridOp::MirrorVGrid])),
+        ];
+        let mut lib = Library::new();
+        sleep_abstract(&exp, &mut lib);
+
+        let mk = |cells: &[(usize, usize, u8)]| {
+            let mut g = Grid::new(3, 3);
+            for &(x, y, c) in cells {
+                g.set(x, y, c);
+            }
+            g
+        };
+        // 3단계: 색 지우기 → 거울 → 확대
+        let prog = [GridOp::RemoveColor(3), GridOp::MirrorHGrid, GridOp::Scale(2)];
+        let out = |g: &Grid| safe_chain(g, &prog).unwrap();
+        let i1 = mk(&[(0, 0, 5), (1, 1, 3), (2, 2, 4)]);
+        let i2 = mk(&[(0, 2, 6), (1, 0, 3), (2, 1, 7)]);
+        let train = vec![(i1.clone(), out(&i1)), (i2.clone(), out(&i2))];
+
+        // 깊이 2로는 못 닫는다
+        let (d2, _) = compose_anytime(&mut lib, &train, 300_000, 2);
+        assert!(d2.is_none(), "깊이 2로 풀리면 깊이 시험이 무의미하다");
+
+        // 예산·깊이를 늘리면 닫는다(anytime 계약)
+        let (d3, rep) = compose_anytime(&mut lib, &train, 800_000, 3);
+        let ops = d3.expect("깊이 3 탐색 실패");
+        let t = mk(&[(2, 0, 3), (0, 1, 8), (1, 2, 9)]);
+        assert_eq!(safe_chain(&t, &ops).unwrap(), out(&t), "시험에서 틀렸다");
         assert!(rep.hits >= 1 && rep.novel >= 1);
     }
 

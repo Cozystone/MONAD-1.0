@@ -21,8 +21,20 @@ fn main() {
     println!("M2-R 수면 패스 — 경험에서 구조를 스스로 발견한다 (anti-unification + MDL)");
     println!("=========================================================================");
 
-    let exp = load_experience(&exp_path);
-    println!("경험 적재: {}건 · {exp_path}", exp.len());
+    // 성공 경험 + **부분 진전 경험**(교사가 버린 정보). 둘 다 경험이다 —
+    // "무엇으로 풀었나"만이 아니라 "무엇이 가까워지게 했나"에서도 구조가 나온다.
+    let partial_path = std::env::var("MONAD_ARC_PARTIAL")
+        .unwrap_or_else(|_| "C:\\0.ASKIM ALL-VIN\\31.Homage AI\\monad-partial.tsv".into());
+    let mut exp = load_experience(&exp_path);
+    let n_success = exp.len();
+    let partial = load_experience(&partial_path);
+    exp.extend(partial.iter().cloned());
+    println!(
+        "경험 적재: 성공 {}건 + 부분 진전 {}건 = {}건",
+        n_success,
+        partial.len(),
+        exp.len()
+    );
     if exp.len() < 2 {
         println!("경험이 2건 미만 — 일반화할 것이 없다(각성을 더 돌릴 것).");
         return;
