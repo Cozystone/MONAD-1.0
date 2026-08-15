@@ -303,6 +303,98 @@ impl Ebm {
         }
         out
     }
+
+    /// í ìì êµ­ì ìëì§(E1+E2+E3) â ICMÂ·ë´ê¸ì§ ê³µì©.
+    fn local_e(&self, keys: &[[u8; 9]], out: &Grid, x: usize, y: usize, c: usize) -> f32 {
+        let (w, h) = (out.w, out.h);
+        let k = &keys[y * w + x];
+        let mut e = self.w[0] * self.e1(k, c);
+        if x > 0 {
+            e += self.w[1] * self.pair_e(out.get(x - 1, y) as usize, c);
+        }
+        if x + 1 < w {
+            e += self.w[1] * self.pair_e(c, out.get(x + 1, y) as usize);
+        }
+        if y > 0 {
+            e += self.w[1] * self.pair_e(out.get(x, y - 1) as usize, c);
+        }
+        if y + 1 < h {
+            e += self.w[1] * self.pair_e(c, out.get(x, y + 1) as usize);
+        }
+        if self.sym_h && out.get(w - 1 - x, y) as usize != c {
+            e += self.w[2];
+        }
+        if self.sym_v && out.get(x, h - 1 - y) as usize != c {
+            e += self.w[2];
+        }
+        e
+    }
+
+    /// ë´ê¸ì§ v2(ìë 144): ICM êµ­ì ìµì ì  íì¶ â ë©í¸ë¡í´ë¦¬ì¤+ê¸°í ëê°,
+    /// ìë ê³ ì  ê²°ì ë¡ . ì´ê¸°ê° = ICM ê²°ê³¼, ë§ë¬´ë¦¬ = ì¡°ê±´ë¶ ìµìí ìë ´.
+    pub fn anneal(&self, input: &Grid, seed: u64) -> Grid {
+        use monad_core::rng::Rng;
+        let (w, h) = (input.w, input.h);
+        let keys: Vec<[u8; 9]> = (0..h)
+            .flat_map(|y| (0..w).map(move |x| (x, y)))
+            .map(|(x, y)| ctx_key(input, x, y))
+            .collect();
+        let mut out = self.infer(input);
+        let mut rng = Rng::new(seed);
+        let mut acc = 0f32;
+        let mut best_acc = 0f32;
+        let mut best = out.clone();
+        let mut t = 1.5f32;
+        for _ in 0..24 {
+            for y in 0..h {
+                for x in 0..w {
+                    let cur = out.get(x, y) as usize;
+                    let c = rng.below(10) as usize;
+                    if c == cur {
+                        continue;
+                    }
+                    let de = self.local_e(&keys, &out, x, y, c)
+                        - self.local_e(&keys, &out, x, y, cur);
+                    if de <= 0.0 || rng.next_f64() < ((-de / t) as f64).exp() {
+                        out.set(x, y, c as u8);
+                        acc += de;
+                        if acc < best_acc {
+                            best_acc = acc;
+                            best = out.clone();
+                        }
+                    }
+                }
+            }
+            t *= 0.82;
+        }
+        // 마무리: 최저 상태에서 조건부 최소화로 수렴
+        let mut o = best;
+        for _ in 0..ICM_ITERS {
+            let mut changed = false;
+            for y in 0..h {
+                for x in 0..w {
+                    let cur = o.get(x, y) as usize;
+                    let mut bc = cur;
+                    let mut bv = f32::INFINITY;
+                    for c in 0..10 {
+                        let e = self.local_e(&keys, &o, x, y, c);
+                        if e < bv {
+                            bv = e;
+                            bc = c;
+                        }
+                    }
+                    if bc != cur {
+                        o.set(x, y, bc as u8);
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        o
+    }
 }
 
 /// 학습 → 훈련 정확 재현 게이트 → 시험 추론.
@@ -336,6 +428,19 @@ pub fn ebm_solve(train: &[(Grid, Grid)], test_in: &Grid) -> Option<Grid> {
         };
         if train.iter().all(|(i, o)| &relax(i) == o) {
             return Some(relax(test_in));
+        }
+    }
+    // ë´ê¸ì§ v2(ìë 144): ê¸°ë³¸ êµ¬ì± íì  Â· ì â¤400 ë¹ì© ë³´í¸ Â· ìë ê³ ì .
+    if test_in.w * test_in.h <= 400
+        && train.iter().all(|(i, _)| i.w * i.h <= 400)
+    {
+        let ebm = Ebm::learn_w(train, [1.0, 0.3, 0.5], false);
+        if train
+            .iter()
+            .enumerate()
+            .all(|(k, (i, o))| &ebm.anneal(i, 0xEB77 ^ k as u64) == o)
+        {
+            return Some(ebm.anneal(test_in, 0xEB77 ^ 99));
         }
     }
     None
