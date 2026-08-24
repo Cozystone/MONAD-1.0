@@ -523,6 +523,22 @@ fn main() {
         )
         .map(|t| t.lines().map(|s| s.trim().to_string()).collect())
         .unwrap_or_default();
+        // 객체 델타 규칙 계층(시도 166) — 승자 표현(시도 165) 위의 두 번째 규칙층
+        let mut obj_gate_pass = 0usize;
+        let mut obj_solved = 0usize;
+        let obj_lib = monad_core::abstraction::Library::load(
+            std::env::var("MONAD_ARC_OBJLIB").unwrap_or_else(|_| {
+                "C:\\0.ASKIM ALL-VIN\\31.Homage AI\\monad-objlib.tsv".into()
+            }),
+        )
+        .unwrap_or_default();
+        let obj_sources: Vec<String> = std::fs::read_to_string(
+            std::env::var("MONAD_ARC_OBJSRC").unwrap_or_else(|_| {
+                "C:\\0.ASKIM ALL-VIN\\31.Homage AI\\monad-objsource.txt".into()
+            }),
+        )
+        .map(|t| t.lines().map(|s| s.trim().to_string()).collect())
+        .unwrap_or_default();
         for task in &tasks {
             if solved_names.contains(&task.name) {
                 continue;
@@ -587,13 +603,32 @@ fn main() {
                 // 재현하면, 그 규칙으로 시험을 푼다. 이것이 code-free 전이의 형태다.
                 // 기억은 가설일 뿐 — **이 과제의 증거로 검증해 모순 없는 규칙만**
                 // 채택한다(전량 적용은 남의 규칙이 오발화해 반드시 깨진다, 시도 158).
+                // **객체 델타 규칙 전이**(시도 166): 승자 표현 위의 성질 조건 규칙.
+                // 같은 오염 차단 규율 — 출처 과제 자신에게는 시도하지 않는다.
+                if ops.is_none() && !obj_sources.contains(&task.name) {
+                    let sel = monad_envs::arc_objrule::select_obj_consistent(&obj_lib, &train);
+                    if monad_envs::arc_objrule::obj_rules_reproduce(&sel, &train) {
+                        obj_gate_pass += 1;
+                        let all_ok = task.test.iter().all(|p| {
+                            monad_envs::arc_objrule::apply_obj_rules(&sel, &p.input) == p.output
+                        });
+                        if all_ok {
+                            obj_solved += 1;
+                            reuse_solved += 1;
+                            solved += 1;
+                            solved_names.push(task.name.clone());
+                            continue;
+                        }
+                    }
+                }
                 // **오염 차단**: 규칙을 배운 과제 자신에게는 전이를 시도하지 않는다.
                 // 자기 훈련쌍에서 나온 규칙으로 자기를 푸는 것은 전이가 아니라 순환이다.
                 if ops.is_none() && !patch_sources.contains(&task.name) {
                     // 일반화 압력(시도 160): 지지도 하한 + 일반적인 규칙 우선.
                     // 159에서 게이트 통과 4건 중 3건이 시험에서 틀린 원인(과적합)의 처방.
-                    let sel =
-                        monad_envs::arc_patch::select_generalizing(&patch_lib, &train, 2);
+                    // 시도 162: 진단(덮개 100%·오발화 341셀/과제)이 지목한 처방 —
+                    // 구체 규칙 우선 + 충돌을 세며 하나씩 넣는 탐욕 덮개 선택.
+                    let sel = monad_envs::arc_patch::select_cover(&patch_lib, &train, 24);
                     patch_selected += sel.len();
                     if monad_envs::arc_patch::selected_reproduce(&sel, &train) {
                         patch_gate_pass += 1;
@@ -692,6 +727,12 @@ fn main() {
         println!(
             "  잔차 닫기(개념 학습): 시도 {}건 → **해결 {}건** (조합 불가 영역의 돌파 여부)",
             residual_closed_tries, residual_closed
+        );
+        println!(
+            "  객체 규칙 전이: 규칙 {}개 · 훈련 재현 통과 {}건 → **해결 {}건** (승자 표현 위 성질 조건 규칙)",
+            obj_lib.entries.len(),
+            obj_gate_pass,
+            obj_solved
         );
         println!(
             "  패치 규칙 전이: 규칙 {}개 · 증거선택 누적 {}개 · 훈련 재현 통과 {}건 → **해결 {}건** \

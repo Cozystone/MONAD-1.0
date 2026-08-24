@@ -56,3 +56,15 @@ path = "src/bin/arc_anatomy.rs"
 [[bin]]
 name = "arc-patchsleep"
 path = "src/bin/arc_patchsleep.rs"
+
+[[bin]]
+name = "arc-coverage"
+path = "src/bin/arc_coverage.rs"
+
+[[bin]]
+name = "arc-repcover"
+path = "src/bin/arc_repcover.rs"
+
+[[bin]]
+name = "arc-objsleep"
+path = "src/bin/arc_objsleep.rs"
