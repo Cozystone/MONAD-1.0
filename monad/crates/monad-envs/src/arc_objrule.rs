@@ -26,6 +26,7 @@
 
 use crate::grid::{components_bg, Grid, Obj};
 use monad_core::abstraction::{generalize, Library, Provenance, Term};
+use std::collections::HashMap;
 
 const F_ORULE: u32 = 910;
 const F_OPROPS: u32 = 911;
@@ -33,7 +34,29 @@ const F_OACT: u32 = 912;
 /// 행동 종류.
 const ACT_RECOLOR: u64 = 1;
 const ACT_DELETE: u64 = 2;
-const NPROPS: usize = 12;
+/// v2(시도 169): 이동을 1급 델타로. param = 인코딩된 (dx,dy).
+const ACT_MOVE: u64 = 3;
+/// 시도 170~171의 계량 판정: 18종 확장(x/y 순위·모양 클래스·구멍·색 유일·비율)은
+/// 모호쌍을 428→164로 줄였지만 **홀드아웃 전이를 2→0으로 죽였다** — 성질 수에
+/// 비례해 쌍 LGG에서 우연히 상수로 굳는 슬롯이 늘기 때문(과잉 구체화). 스키마
+/// 정련 1라운드로도 회복 불가. **④를 실증한 12종을 유지**하고, 확장은 일반화
+/// 사다리가 여러 라운드로 강해진 뒤 재시도한다(측정으로 기각, 추측 아님).
+pub const NPROPS: usize = 12;
+
+/// 이동 벡터 인코딩(격자 ≤30이므로 ±30이면 충분). 델타 표기와 규칙 param 공용.
+const MOVE_BASE: u64 = 1000;
+fn encode_move(dx: i64, dy: i64) -> u64 {
+    MOVE_BASE + ((dx + 30) as u64) * 61 + ((dy + 30) as u64)
+}
+fn decode_move(v: u64) -> Option<(i64, i64)> {
+    if v < MOVE_BASE {
+        return None;
+    }
+    let r = v - MOVE_BASE;
+    let dx = (r / 61) as i64 - 30;
+    let dy = (r % 61) as i64 - 30;
+    (dx.abs() <= 30 && dy.abs() <= 30).then_some((dx, dy))
+}
 
 /// 승자 표현(시도 165): 단색 4-연결, 배경 0.
 fn decompose(g: &Grid) -> Vec<Obj> {
@@ -154,14 +177,12 @@ fn split_orule(t: &Term) -> Option<(&Vec<Term>, &Term, &Term)> {
     }
 }
 
-/// 입력↔출력 객체를 짝짓고 각 입력 객체의 실제 델타를 정한다.
-/// None = 이 표현으로 완전 기술 불가(이동·출현·부분 변형 포함 과제).
+/// 입력↔출력 객체를 짝짓는 공통 코어. 반환: (객체별 델타, 완전 기술 여부).
 ///
-/// 반환: 객체별 (stay=None | recolor(newc)=Some(c) | delete=Some(10)).
-pub fn actual_deltas(i: &Grid, o: &Grid) -> Option<Vec<Option<u64>>> {
-    if i.w != o.w || i.h != o.h {
-        return None;
-    }
+/// 델타: stay=None | recolor(newc)=Some(c) | delete=Some(10). `complete`가 거짓이면
+/// 짝 없는 객체(이동·출현·부분 변형)가 남아 있다 — **확정된 재색·삭제 델타는
+/// 그래도 유효하다**(부분 추출의 근거).
+fn match_deltas(i: &Grid, o: &Grid) -> (Vec<Option<u64>>, Vec<bool>, bool) {
     let oi = decompose(i);
     let oo = decompose(o);
     let mut used_o = vec![false; oo.len()];
@@ -220,6 +241,26 @@ pub fn actual_deltas(i: &Grid, o: &Grid) -> Option<Vec<Option<u64>>> {
         if matched[a] {
             continue;
         }
+        // **이동 매칭**(v2, 시도 169): 같은 모양·색의 짝 없는 출력 객체가 다른
+        // 자리에 있으면 이동이다 — v1에서는 삭제 오분류만 막았지만(가드), 이제
+        // 1급 델타로 승격한다. 델타 = 인코딩된 (dx,dy). 후보가 여럿이면 가장
+        // 가까운 것(맨해튼 거리)을 짝으로 — 결정론적.
+        let mv = oo
+            .iter()
+            .enumerate()
+            .filter(|(b, ob)| {
+                !used_o[*b] && shape_key(ia) == shape_key(ob) && obj_color(ia) == obj_color(ob)
+            })
+            .min_by_key(|(_, ob)| {
+                (ob.x0 as i64 - ia.x0 as i64).abs() + (ob.y0 as i64 - ia.y0 as i64).abs()
+            })
+            .map(|(b, ob)| (b, ob.x0 as i64 - ia.x0 as i64, ob.y0 as i64 - ia.y0 as i64));
+        if let Some((b, dx, dy)) = mv {
+            used_o[b] = true;
+            matched[a] = true;
+            deltas[a] = Some(encode_move(dx, dy));
+            continue;
+        }
         let all_bg = (0..ia.h)
             .flat_map(|dy| (0..ia.w).map(move |dx| (dx, dy)))
             .filter(|&(dx, dy)| ia.mask[dy * ia.w + dx])
@@ -229,24 +270,48 @@ pub fn actual_deltas(i: &Grid, o: &Grid) -> Option<Vec<Option<u64>>> {
             deltas[a] = Some(10); // 10 = 삭제 표지(색 0..9와 구별)
         }
     }
-    // 짝 없는 입력 객체(이동·부분 변형) 또는 짝 없는 출력 객체(출현·이동)가 남으면
-    // 이 표현으로 완전 기술 불가 — v1은 정직하게 포기한다.
-    if matched.iter().any(|m| !m) || used_o.iter().any(|u| !u) {
+    let complete = matched.iter().all(|m| *m) && used_o.iter().all(|u| *u);
+    (deltas, matched, complete)
+}
+
+/// 완전 기술 판정(선택·게이트용): 이동·출현이 섞이면 None — 전이 판정의
+/// 엄격함은 유지한다.
+pub fn actual_deltas(i: &Grid, o: &Grid) -> Option<Vec<Option<u64>>> {
+    if i.w != o.w || i.h != o.h {
         return None;
     }
-    Some(deltas)
+    let (deltas, _, complete) = match_deltas(i, o);
+    if complete {
+        Some(deltas)
+    } else {
+        None
+    }
 }
 
 /// 훈련쌍에서 객체 델타 경험을 뽑는다(재색·삭제만, 기계적).
+///
+/// **부분 추출**(시도 167): 이동·출현이 섞인 쌍이라도 짝이 확정된 재색·삭제
+/// 델타는 경험으로 남긴다. 완전 기술 요구는 추출이 아니라 **선택·게이트**의
+/// 몫이다 — 교사가 버리던 정보를 회수하자던 원칙(시도 151)을 추출기가 다시
+/// 어기고 있었다(200과제 중 10개만 경험 생산의 원인).
 pub fn extract_obj_rules(train: &[(Grid, Grid)]) -> Vec<Term> {
     let mut out = Vec::new();
     for (i, o) in train {
-        let Some(deltas) = actual_deltas(i, o) else { continue };
+        if i.w != o.w || i.h != o.h {
+            continue;
+        }
+        let (deltas, matched, _complete) = match_deltas(i, o);
         let objs = decompose(i);
         let props = object_props(i, &objs);
         for (a, d) in deltas.iter().enumerate() {
+            if !matched[a] {
+                continue; // 짝 미확정(이동 후보 등) — 델타를 단정하지 않는다
+            }
             match d {
                 Some(10) => out.push(rule_term(&props[a], ACT_DELETE, 0)),
+                Some(v) if *v >= MOVE_BASE => {
+                    out.push(rule_term(&props[a], ACT_MOVE, *v))
+                }
                 Some(c) => out.push(rule_term(&props[a], ACT_RECOLOR, *c)),
                 None => {}
             }
@@ -255,24 +320,97 @@ pub fn extract_obj_rules(train: &[(Grid, Grid)]) -> Vec<Term> {
     out
 }
 
-/// 수면: 델타 경험을 일반화한다 — 행동별 그룹 + **전역 이웃쌍**(param이 성질
-/// 자리와 변수를 공유해 팔레트 독립 규칙이 되는 경로). 채택은 MDL.
+/// 수면: 델타 경험을 일반화한다 — 이웃쌍 + 3창(과제 내 구조). 채택은 MDL.
 pub fn sleep_obj_abstract(rules: &[Term], lib: &mut Library) -> (usize, usize) {
     let (mut tried, mut added) = (0usize, 0usize);
-    let mut ins = |terms: &[Term], tried: &mut usize, added: &mut usize| {
-        *tried += 1;
-        if let Some(a) = generalize(terms) {
+    for w in rules.windows(2) {
+        tried += 1;
+        if let Some(a) = generalize(w) {
             if lib.insert(&a, Provenance::MonadDerived) {
-                *added += 1;
+                added += 1;
             }
         }
-    };
-    for w in rules.windows(2) {
-        ins(w, &mut tried, &mut added);
     }
     // 같은 행동끼리 더 넓게 접기(3개 창 — 그룹 전체는 과일반화라 이웃 3개까지만)
     for w in rules.windows(3) {
-        ins(w, &mut tried, &mut added);
+        tried += 1;
+        if let Some(a) = generalize(w) {
+            if lib.insert(&a, Provenance::MonadDerived) {
+                added += 1;
+            }
+        }
+    }
+    (tried, added)
+}
+
+/// **과제 간 수면**(시도 168): 서로 다른 과제의 경험끼리 접는다 — 전이 규칙의
+/// 원천은 이것이다. 이웃쌍(`windows`)은 대부분 같은 과제 안의 쌍이라, 과제 간
+/// 공통 구조(팔레트가 달라도 성립하는 조건)가 거의 생성되지 않고 있었다.
+///
+/// 같은 행동 종류끼리만 쌍을 만든다(종류가 다르면 LGG가 행동을 변수로 만들어
+/// 실행 불가 규칙이 된다). 채택은 여전히 MDL + 중복 병합.
+pub fn sleep_obj_cross(groups: &[Vec<Term>], lib: &mut Library) -> (usize, usize) {
+    let kind_of = |t: &Term| -> u64 {
+        split_orule(t)
+            .and_then(|(_, k, _)| match k {
+                Term::Const(v) => Some(*v),
+                _ => None,
+            })
+            .unwrap_or(0)
+    };
+    let (mut tried, mut added) = (0usize, 0usize);
+    for gi in 0..groups.len() {
+        for gj in gi + 1..groups.len() {
+            for a in &groups[gi] {
+                let ka = kind_of(a);
+                for b in &groups[gj] {
+                    if ka != kind_of(b) {
+                        continue;
+                    }
+                    tried += 1;
+                    if let Some(abs) = generalize(&[a.clone(), b.clone()]) {
+                        if lib.insert(&abs, Provenance::MonadDerived) {
+                            added += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    (tried, added)
+}
+
+/// **스키마 정련**(시도 171): 라이브러리의 규칙들끼리 한 번 더 접는다.
+///
+/// 성질을 18종으로 늘리자(시도 170) 모호쌍은 428→164로 줄었지만 v2가 풀던
+/// 홀드아웃 2건이 0으로 후퇴했다 — 쌍 LGG에서 **우연히 상수로 굳는 슬롯**이
+/// 성질 수에 비례해 늘기 때문이다(일반화-특이성 트레이드오프의 실측). 처방은
+/// 성질 축소가 아니라 **일반화 사다리의 다음 칸**: 같은 행동의 스키마끼리
+/// 다시 LGG를 돌리면, 세 과제 이상에 공통인 조건만 상수로 남는다. 어느 수준이
+/// 옳은지는 미리 정하지 않는다 — 여러 수준이 라이브러리에 공존하고, 과제의
+/// 증거(select)가 고른다. 채택은 여전히 MDL.
+pub fn sleep_obj_refine(lib: &mut Library) -> (usize, usize) {
+    let mut by_kind: HashMap<u64, Vec<Term>> = HashMap::new();
+    for e in &lib.entries {
+        if let Some((_, Term::Const(k), _)) = split_orule(&e.schema) {
+            by_kind.entry(*k).or_default().push(e.schema.clone());
+        }
+    }
+    let (mut tried, mut added) = (0usize, 0usize);
+    let mut kinds: Vec<u64> = by_kind.keys().copied().collect();
+    kinds.sort_unstable();
+    for k in kinds {
+        let mut group = by_kind.remove(&k).unwrap();
+        // 결정론적 순서(문자열 표기) — 인접쌍이 재현 가능해야 한다
+        group.sort_by_key(|t| format!("{t}"));
+        for w in group.windows(2) {
+            tried += 1;
+            if let Some(a) = generalize(w) {
+                if lib.insert(&a, Provenance::MonadDerived) {
+                    added += 1;
+                }
+            }
+        }
     }
     (tried, added)
 }
@@ -313,11 +451,9 @@ fn orule_fire(
 
 /// **증거 기반 선택**: 이 과제의 모든 객체(유지 포함)에 대해 모순 없이 발화하는
 /// 규칙만 채택한다. 유지 객체에서 변경 행동이 발화하면 모순이다.
-pub fn select_obj_consistent(
-    lib: &Library,
-    train: &[(Grid, Grid)],
-) -> Vec<(Vec<Term>, Term, Term)> {
-    // 훈련쌍별 (성질, 실제 델타) — 하나라도 기술 불가면 빈 손
+/// 과제의 모든 (성질, 실제 델타) 지점. 하나라도 기술 불가면 빈 벡터 —
+/// 선택·진단이 공유하는 표준 좌표계다.
+pub fn task_props(train: &[(Grid, Grid)]) -> Vec<([u64; NPROPS], Option<u64>)> {
     let mut sites: Vec<([u64; NPROPS], Option<u64>)> = Vec::new();
     for (i, o) in train {
         let Some(deltas) = actual_deltas(i, o) else { return Vec::new() };
@@ -326,6 +462,23 @@ pub fn select_obj_consistent(
         for (p, d) in props.into_iter().zip(deltas) {
             sites.push((p, d));
         }
+    }
+    sites
+}
+
+/// 이 규칙이 이 성질 지점에서 발화하는가(진단용 — 시도 170).
+pub fn rule_covers(rule: &(Vec<Term>, Term, Term), props: &[u64; NPROPS]) -> bool {
+    orule_fire(&rule.0, &rule.1, &rule.2, props).is_some()
+}
+
+pub fn select_obj_consistent(
+    lib: &Library,
+    train: &[(Grid, Grid)],
+) -> Vec<(Vec<Term>, Term, Term)> {
+    // 훈련쌍별 (성질, 실제 델타) — 하나라도 기술 불가면 빈 손
+    let sites = task_props(train);
+    if sites.is_empty() {
+        return Vec::new();
     }
     let mut kept = Vec::new();
     for e in lib.by_prior() {
@@ -337,6 +490,7 @@ pub fn select_obj_consistent(
             let ok = match actual {
                 None => k == ACT_RECOLOR && p == props[0], // 자기 색 재색 = 유지와 동치
                 Some(10) => k == ACT_DELETE,
+                Some(v) if *v >= MOVE_BASE => k == ACT_MOVE && p == *v,
                 Some(c) => k == ACT_RECOLOR && p == *c,
             };
             if !ok {
@@ -358,23 +512,61 @@ pub fn select_obj_consistent(
 pub fn apply_obj_rules(rules: &[(Vec<Term>, Term, Term)], g: &Grid) -> Grid {
     let objs = decompose(g);
     let props = object_props(g, &objs);
-    let mut out = g.clone();
-    for (o, p) in objs.iter().zip(props.iter()) {
+    // 1패스: 각 객체의 행동을 확정(첫 발화 규칙, 사전분포 순서)
+    let mut acts: Vec<Option<(u64, u64)>> = vec![None; objs.len()];
+    for (ix, p) in props.iter().enumerate() {
         for (cond, kind, param) in rules {
-            let Some((k, val)) = orule_fire(cond, kind, param, p) else { continue };
-            let paint = match k {
-                ACT_DELETE => 0u8,
-                ACT_RECOLOR if val <= 9 => val as u8,
-                _ => continue,
-            };
-            for dy in 0..o.h {
-                for dx in 0..o.w {
-                    if o.mask[dy * o.w + dx] {
-                        out.set(o.x0 + dx, o.y0 + dy, paint);
+            if let Some((k, val)) = orule_fire(cond, kind, param, p) {
+                acts[ix] = Some((k, val));
+                break;
+            }
+        }
+    }
+    let mut out = g.clone();
+    // 2패스-지우기: 삭제·이동의 옛 자리를 먼저 비운다(이동이 서로의 옛 자리로
+    // 들어가도 안전하도록 그리기와 분리)
+    for (o, a) in objs.iter().zip(acts.iter()) {
+        let clear = matches!(a, Some((k, _)) if *k == ACT_DELETE || *k == ACT_MOVE);
+        if !clear {
+            continue;
+        }
+        for dy in 0..o.h {
+            for dx in 0..o.w {
+                if o.mask[dy * o.w + dx] {
+                    out.set(o.x0 + dx, o.y0 + dy, 0);
+                }
+            }
+        }
+    }
+    // 2패스-그리기: 재색과 이동의 새 자리
+    for (o, a) in objs.iter().zip(acts.iter()) {
+        match a {
+            Some((k, val)) if *k == ACT_RECOLOR && *val <= 9 => {
+                for dy in 0..o.h {
+                    for dx in 0..o.w {
+                        if o.mask[dy * o.w + dx] {
+                            out.set(o.x0 + dx, o.y0 + dy, *val as u8);
+                        }
                     }
                 }
             }
-            break;
+            Some((k, val)) if *k == ACT_MOVE => {
+                let Some((mdx, mdy)) = decode_move(*val) else { continue };
+                let c = obj_color(o);
+                for dy in 0..o.h {
+                    for dx in 0..o.w {
+                        if !o.mask[dy * o.w + dx] {
+                            continue;
+                        }
+                        let nx = o.x0 as i64 + dx as i64 + mdx;
+                        let ny = o.y0 as i64 + dy as i64 + mdy;
+                        if nx >= 0 && ny >= 0 && (nx as usize) < g.w && (ny as usize) < g.h {
+                            out.set(nx as usize, ny as usize, c);
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
     }
     out
@@ -421,6 +613,68 @@ mod tests {
         assert!(kinds.contains(&ACT_RECOLOR) && kinds.contains(&ACT_DELETE));
     }
 
+    /// **이동 1급 델타**(시도 169): 이동이 섞인 쌍이 완전 기술되고, 이동은
+    /// 삭제로 오분류되지 않으며(옛 자리 배경화만으로는 삭제가 아니다), 재색과
+    /// 이동이 각각 올바른 행동·매개로 추출된다.
+    #[test]
+    fn move_is_first_class_and_never_misread_as_delete() {
+        let mut i = Grid::new(9, 9);
+        place(&mut i, 0, 0, 2, 2, 3); // 재색될 것
+        place(&mut i, 6, 6, 2, 2, 5); // 이동할 것
+        let mut o = Grid::new(9, 9);
+        place(&mut o, 0, 0, 2, 2, 7); // 재색됨
+        place(&mut o, 2, 6, 2, 2, 5); // 왼쪽으로 4칸 이동
+        // v2: 이동 포함 쌍도 완전 기술된다
+        let deltas = actual_deltas(&i, &o).expect("이동 1급인데 완전 기술 실패");
+        assert!(deltas.iter().any(|d| matches!(d, Some(v) if *v >= MOVE_BASE)));
+        let r = extract_obj_rules(&[(i, o)]);
+        assert_eq!(r.len(), 2, "재색 1 + 이동 1이어야 한다: {}건", r.len());
+        let mut kinds: Vec<u64> = r
+            .iter()
+            .filter_map(|t| split_orule(t).and_then(|(_, k, _)| match k {
+                Term::Const(v) => Some(*v),
+                _ => None,
+            }))
+            .collect();
+        kinds.sort_unstable();
+        assert_eq!(kinds, vec![ACT_RECOLOR, ACT_MOVE]);
+        // 이동 매개가 정확히 (-4, 0)인가
+        let mv = r
+            .iter()
+            .find_map(|t| split_orule(t).and_then(|(_, k, p)| {
+                (k == &Term::Const(ACT_MOVE)).then_some(p.clone())
+            }))
+            .unwrap();
+        assert_eq!(mv, Term::Const(encode_move(-4, 0)));
+    }
+
+    /// **이동 전이**: "오른쪽으로 2칸"을 색·배치가 다른 두 과제에서 경험 →
+    /// 본 적 없는 세 번째 과제를 재현하고 시험까지 푼다. 이동 벡터는 상수로
+    /// 공유되고 나머지 성질은 LGG가 변수로 접는다.
+    #[test]
+    fn move_rule_transfers_across_tasks() {
+        let mk = |x: usize, y: usize, c: u8| {
+            let mut i = Grid::new(9, 9);
+            place(&mut i, x, y, 2, 2, c);
+            let mut o = Grid::new(9, 9);
+            place(&mut o, x + 2, y, 2, 2, c);
+            (i, o)
+        };
+        let mut rules = extract_obj_rules(&[mk(1, 1, 3)]);
+        rules.extend(extract_obj_rules(&[mk(2, 4, 5)]));
+        let mut lib = Library::new();
+        sleep_obj_abstract(&rules, &mut lib);
+        // (경험과 같은 성질 부류: 비테두리 — x0=0이면 border-touch 성질이 달라
+        //  발화하지 않는 것이 올바른 동작이다)
+        let (ci, co) = mk(1, 3, 7);
+        let train = [(ci, co)];
+        let sel = select_obj_consistent(&lib, &train);
+        assert!(!sel.is_empty(), "이동 일관 규칙을 못 골랐다");
+        assert!(obj_rules_reproduce(&sel, &train), "이동 재현 실패");
+        let (ti, to) = mk(3, 2, 9);
+        assert_eq!(apply_obj_rules(&sel, &ti), to, "이동 시험 실패");
+    }
+
     /// **과제 간 전이**: "가장 작은 객체를 지워라"를 배치·색이 다른 두 과제에서
     /// 경험 → 본 적 없는 세 번째 과제의 훈련쌍을 재현하고 시험까지 푼다.
     /// 리터럴이 아니라 성질(최소 크기)이 조건이 됐다는 뜻이다.
@@ -442,9 +696,9 @@ mod tests {
         assert!(!lib.entries.is_empty(), "수면이 규칙을 만들지 못했다");
 
         // 과제 C: 또 다른 배치·색 — 본 적 없는 조합
-        // (경험한 작은 객체들과 같은 성질 부류: 비테두리 — 성질이 조건이 됐으므로
-        //  테두리 접촉 여부가 다르면 발화하지 않는 것이 올바른 동작이다)
-        let (ci, co) = mk((2, 4, 9), (7, 1, 1));
+        // (경험한 작은 객체들과 같은 성질 부류: 비테두리·아래쪽 — 성질이 조건이
+        //  됐으므로 그 부류를 벗어나면 발화하지 않는 것이 올바른 동작이다)
+        let (ci, co) = mk((2, 4, 9), (7, 7, 1));
         let train = [(ci.clone(), co.clone())];
         let sel = select_obj_consistent(&lib, &train);
         assert!(!sel.is_empty(), "일관 규칙을 못 골랐다");

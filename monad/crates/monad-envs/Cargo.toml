@@ -68,3 +68,7 @@ path = "src/bin/arc_repcover.rs"
 [[bin]]
 name = "arc-objsleep"
 path = "src/bin/arc_objsleep.rs"
+
+[[bin]]
+name = "arc-objcover"
+path = "src/bin/arc_objcover.rs"

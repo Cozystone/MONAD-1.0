@@ -9,7 +9,9 @@
 
 use monad_core::abstraction::{Library, Provenance};
 use monad_envs::arc_data::load_dir;
-use monad_envs::arc_objrule::{extract_obj_rules, sleep_obj_abstract};
+use monad_envs::arc_objrule::{
+    extract_obj_rules, sleep_obj_abstract, sleep_obj_cross, sleep_obj_refine,
+};
 
 fn main() {
     let dir = std::env::args().nth(1).unwrap_or_else(|| {
@@ -34,6 +36,7 @@ fn main() {
     let before = lib.entries.len();
 
     let mut rules = Vec::new();
+    let mut groups: Vec<Vec<monad_core::abstraction::Term>> = Vec::new();
     let mut sources: Vec<String> = Vec::new();
     for task in tasks.iter().take(take) {
         let train: Vec<_> = task
@@ -44,7 +47,8 @@ fn main() {
         let r = extract_obj_rules(&train);
         if !r.is_empty() {
             sources.push(task.name.clone());
-            rules.extend(r);
+            rules.extend(r.iter().cloned());
+            groups.push(r);
         }
     }
     let _ = std::fs::write(&src_path, sources.join("\n"));
@@ -61,6 +65,14 @@ fn main() {
 
     let t0 = std::time::Instant::now();
     let (tried, added) = sleep_obj_abstract(&rules, &mut lib);
+    // 과제 간 수면 — 전이 규칙의 원천(시도 168)
+    let (tried_x, added_x) = sleep_obj_cross(&groups, &mut lib);
+    println!(
+        "과제 간 일반화: 시도 {tried_x}회 → 새 규칙 {added_x}개 (서로 다른 과제의 경험쌍)"
+    );
+    // 스키마 정련 — 일반화 사다리의 다음 칸(시도 171): 우연히 굳은 상수를 푼다
+    let (tried_r, added_r) = sleep_obj_refine(&mut lib);
+    println!("스키마 정련: 시도 {tried_r}회 → 새 규칙 {added_r}개 (스키마 간 재일반화)");
     let _ = lib.save(&lib_path);
     println!(
         "일반화 시도 {tried}회 → **새 규칙 {added}개** (라이브러리 {} → {}) · {:.1}초",

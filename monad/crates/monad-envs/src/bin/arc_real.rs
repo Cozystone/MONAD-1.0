@@ -623,7 +623,10 @@ fn main() {
                 }
                 // **오염 차단**: 규칙을 배운 과제 자신에게는 전이를 시도하지 않는다.
                 // 자기 훈련쌍에서 나온 규칙으로 자기를 푸는 것은 전이가 아니라 순환이다.
-                if ops.is_none() && !patch_sources.contains(&task.name) {
+                if ops.is_none()
+                    && !patch_sources.contains(&task.name)
+                    && std::env::var("MONAD_ARC_NO_PATCH").is_err()
+                {
                     // 일반화 압력(시도 160): 지지도 하한 + 일반적인 규칙 우선.
                     // 159에서 게이트 통과 4건 중 3건이 시험에서 틀린 원인(과적합)의 처방.
                     // 시도 162: 진단(덮개 100%·오발화 341셀/과제)이 지목한 처방 —
