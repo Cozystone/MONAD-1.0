@@ -979,12 +979,35 @@ pub fn raw_correct_rule_exists(lib: &Library, site: &Site) -> bool {
     false
 }
 
+/// 부분 기술 과제에서도 일관 규칙을 고른다(시도 190).
+///
+/// [`select_obj_consistent`]는 [`task_props`]를 쓰므로 **완전 기술되는 과제**만
+/// 받는다. 정확 재현 게이트에는 그것이 옳다 — 예측하려면 전부 알아야 하니까.
+/// 그러나 **계층 간 합성**은 다르다: 객체 규칙은 잔차만 줄이면 되고, 무해성은
+/// 잔차 감소 가드가 본다. 완전성을 여기서 요구하면 합성 경로가 ①의 제약을
+/// 물려받아 10건으로 좁아진다(시도 189에서 실측).
+///
+/// 시도 167(추출)·186(반례)에 적용한 원칙과 같다:
+/// **완전성은 게이트의 몫이지 선택의 몫이 아니다.**
+pub fn select_obj_consistent_partial(
+    lib: &Library,
+    train: &[(Grid, Grid)],
+) -> Vec<(Vec<Term>, Term, Term)> {
+    select_from_sites(lib, &task_props_partial(train))
+}
+
 pub fn select_obj_consistent(
     lib: &Library,
     train: &[(Grid, Grid)],
 ) -> Vec<(Vec<Term>, Term, Term)> {
     // 훈련쌍별 (성질, 실제 델타) — 하나라도 기술 불가면 빈 손
     let sites = task_props(train);
+    select_from_sites(lib, &sites)
+}
+
+/// 주어진 관측 지점들에 대해 모순 없는 규칙만 고른다(두 선택기의 공통 코어).
+fn select_from_sites(lib: &Library, sites: &[Site]) -> Vec<(Vec<Term>, Term, Term)> {
+    let sites = sites.to_vec();
     if sites.is_empty() {
         return Vec::new();
     }
@@ -1205,6 +1228,46 @@ pub fn apply_obj_rules(rules: &[(Vec<Term>, Term, Term)], g: &Grid) -> Grid {
         }
     }
     out
+}
+
+/// **반복 적용**(시도 191) — 규칙은 전이를 기술하므로 한 번 적용하면 객체의
+/// 성질이 바뀌고, 그러면 **다른 규칙이 발화한다**. 프로그램 계층에는 이미
+/// anytime 합성이 있지만(시도 172) 객체 계층은 1회 적용뿐이었다.
+///
+/// 고정점(더 이상 변하지 않음)이나 상한까지 돌린다. 발산은 상한이 막고,
+/// 무해성은 게이트가 본다 — 훈련쌍을 정확히 재현할 때만 채택되기 때문이다.
+pub fn apply_obj_rules_iter(
+    rules: &[(Vec<Term>, Term, Term)],
+    g: &Grid,
+    max_iters: usize,
+) -> Grid {
+    let mut cur = g.clone();
+    for _ in 0..max_iters {
+        let next = apply_obj_rules(rules, &cur);
+        if next == cur {
+            break; // 고정점
+        }
+        cur = next;
+    }
+    cur
+}
+
+/// 반복 적용으로 훈련쌍을 재현하는 **최소 깊이**를 찾는다(없으면 None).
+/// 최소 깊이를 쓰는 이유: 더 깊이 돌수록 우연한 일치 위험이 커지므로,
+/// 설명이 되는 가장 얕은 것을 택한다(오컴).
+pub fn obj_rules_reproduce_depth(
+    rules: &[(Vec<Term>, Term, Term)],
+    train: &[(Grid, Grid)],
+    max_iters: usize,
+) -> Option<usize> {
+    if rules.is_empty() {
+        return None;
+    }
+    (1..=max_iters).find(|&d| {
+        train
+            .iter()
+            .all(|(i, o)| i.w == o.w && i.h == o.h && &apply_obj_rules_iter(rules, i, d) == o)
+    })
 }
 
 /// 선택 규칙이 훈련쌍을 완전히 재현하는가(전이 게이트).
