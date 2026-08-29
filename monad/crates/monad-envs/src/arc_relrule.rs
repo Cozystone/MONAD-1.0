@@ -320,6 +320,21 @@ pub fn sleep_rel_drop(per_task: &[Vec<RSite>], lib: &mut Library) -> (usize, usi
                         };
                         if equations_first {
                             equate(&mut sc, &mut tc);
+                        } else {
+                            // **맨몸 존재**(시도 195): target을 통째로 자유 변수로
+                            // 두면 규칙은 "그런 상대가 **있기만 하면**"이 된다
+                            // ("바로 위에 뭔가 있는 객체를 지운다"). 관계 규칙에서
+                            // 가장 일반적인 형태인데, 슬롯을 하나씩 떨어뜨리는
+                            // 순서로는 도달하기 어렵다 — 존재 양화 탓에 발화가
+                            // 잦아 중간 단계에서 반례에 걸리기 때문이다.
+                            // 통째로 시도해 반례가 없으면 채택한다.
+                            let bare: Vec<Term> =
+                                (0..NPROPS).map(|j| Term::Var(100 + j as u32)).collect();
+                            if !has_counterexample(
+                                &sc, r as u64, &bare, &Term::Const(kind), &out, sites,
+                            ) {
+                                tc = bare;
+                            }
                         }
                         for j in 0..NPROPS {
                             if matches!(sc[j], Term::Var(_)) {
@@ -440,6 +455,83 @@ pub fn rel_rules_reproduce(rules: &[RelRule], train: &[(Grid, Grid)]) -> bool {
         && train
             .iter()
             .all(|(i, o)| i.w == o.w && i.h == o.h && &apply_rel_rules(rules, i) == o)
+}
+
+/// 이 규칙이 이 지점에서 발화하는가(진단용).
+pub fn rel_rule_covers(rule: &RelRule, site: &RSite) -> bool {
+    relrule_fire(&rule.0, rule.1, &rule.2, &rule.3, &rule.4, site).is_some()
+}
+
+/// **필터 이전**에 이 지점에서 정답 행동을 주장하는 규칙이 있는가(진단용).
+/// GEN2에서 이해를 열었던 원인 분해를 GEN3에도 적용한다:
+/// 부재(경험 구멍) vs 필터 탈락(판별력 부족)을 가른다.
+pub fn rel_raw_correct_exists(lib: &Library, site: &RSite) -> bool {
+    lib.entries.iter().any(|e| {
+        split_relrule(&e.schema)
+            .and_then(|(sc, r, tc, k, p)| relrule_fire(sc, r, tc, k, p, site))
+            .map(|(k, p)| action_ok(k, p, site))
+            .unwrap_or(false)
+    })
+}
+
+/// 이 규칙의 발화 결과(계층 결합용).
+pub fn rel_rule_action(rule: &RelRule, site: &RSite) -> Option<(u64, u64)> {
+    relrule_fire(&rule.0, rule.1, &rule.2, &rule.3, &rule.4, site)
+}
+
+/// **두 계층의 합집합 적용**(시도 196).
+///
+/// GEN2(속성)와 GEN3(관계)는 **서로 다른 객체를 덮는다** — 전자는 성질로
+/// 결정되는 자리를, 후자는 관계로 결정되는 자리를. 각각 30~76%씩 덮지만
+/// 과제의 게이트는 바뀐 객체가 **전부** 덮여야 열린다. 두 계층을 합치면
+/// 그 전부가 채워질 수 있다.
+///
+/// 순서: 속성 규칙 먼저(더 구체적·검증된 계층), 없으면 관계 규칙.
+pub fn apply_combined(
+    obj_rules: &[(Vec<Term>, Term, Term)],
+    rel_rules: &[RelRule],
+    g: &Grid,
+) -> Grid {
+    let objs = components_bg(g, false, 0);
+    let props = object_props(g, &objs);
+    let sites = grid_sites(g);
+    let mut out = g.clone();
+    for (ix, o) in objs.iter().enumerate() {
+        let act = obj_rules
+            .iter()
+            .find_map(|r| crate::arc_objrule::obj_rule_action(r, &props[ix]))
+            .or_else(|| {
+                rel_rules
+                    .iter()
+                    .find_map(|r| rel_rule_action(r, &sites[ix]))
+            });
+        let Some((k, val)) = act else { continue };
+        let paint = match k {
+            ACT_DELETE => 0u8,
+            ACT_RECOLOR if val <= 9 => val as u8,
+            _ => continue,
+        };
+        for dy in 0..o.h {
+            for dx in 0..o.w {
+                if o.mask[dy * o.w + dx] {
+                    out.set(o.x0 + dx, o.y0 + dy, paint);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// 결합 게이트: 두 계층을 합쳐 훈련쌍을 완전히 재현하는가.
+pub fn combined_reproduce(
+    obj_rules: &[(Vec<Term>, Term, Term)],
+    rel_rules: &[RelRule],
+    train: &[(Grid, Grid)],
+) -> bool {
+    (!obj_rules.is_empty() || !rel_rules.is_empty())
+        && train.iter().all(|(i, o)| {
+            i.w == o.w && i.h == o.h && &apply_combined(obj_rules, rel_rules, i) == o
+        })
 }
 
 /// 관계 이름(보고용).

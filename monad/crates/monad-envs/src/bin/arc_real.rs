@@ -531,6 +531,7 @@ fn main() {
         let mut obj_iter_gate = 0usize;
         // GEN3 관계 규칙 계층(시도 192) — 존재 양화가 있는 세 번째 계층
         let (mut rel_gate_pass, mut rel_solved) = (0usize, 0usize);
+        let (mut comb_gate_pass, mut comb_solved) = (0usize, 0usize);
         let rel_lib = monad_core::abstraction::Library::load(
             std::env::var("MONAD_ARC_RELLIB").unwrap_or_else(|_| {
                 "C:\\0.ASKIM ALL-VIN\\31.Homage AI\\monad-rellib.tsv".into()
@@ -637,6 +638,33 @@ fn main() {
                             solved += 1;
                             solved_names.push(task.name.clone());
                             continue;
+                        }
+                    }
+                }
+                // **두 계층 결합 전이**(시도 196): GEN2(속성)와 GEN3(관계)는
+                // 서로 다른 객체를 덮는다. 과제 게이트는 바뀐 객체가 **전부**
+                // 덮여야 열리므로, 합집합이 각 계층 단독보다 유리하다.
+                if ops.is_none()
+                    && !obj_sources.contains(&task.name)
+                    && !rel_sources.contains(&task.name)
+                {
+                    let osel =
+                        monad_envs::arc_objrule::select_obj_consistent(&obj_lib, &train);
+                    let rsel = monad_envs::arc_relrule::select_rel_consistent(&rel_lib, &train);
+                    if !osel.is_empty() && !rsel.is_empty() {
+                        if monad_envs::arc_relrule::combined_reproduce(&osel, &rsel, &train) {
+                            comb_gate_pass += 1;
+                            let all_ok = task.test.iter().all(|p| {
+                                monad_envs::arc_relrule::apply_combined(&osel, &rsel, &p.input)
+                                    == p.output
+                            });
+                            if all_ok {
+                                comb_solved += 1;
+                                reuse_solved += 1;
+                                solved += 1;
+                                solved_names.push(task.name.clone());
+                                continue;
+                            }
                         }
                     }
                 }
@@ -884,6 +912,10 @@ fn main() {
             rel_lib.entries.len(),
             rel_gate_pass,
             rel_solved
+        );
+        println!(
+            "  두 계층 결합(시도 196): 훈련 재현 통과 {}건 → **해결 {}건** (속성 ∪ 관계)",
+            comb_gate_pass, comb_solved
         );
         println!(
             "  패치 규칙 전이: 규칙 {}개 · 증거선택 누적 {}개 · 훈련 재현 통과 {}건 → **해결 {}건** \

@@ -967,6 +967,14 @@ pub fn task_props_partial(train: &[(Grid, Grid)]) -> Vec<Site> {
     sites
 }
 
+/// 이 규칙의 발화 결과(계층 결합용 — 시도 196).
+pub fn obj_rule_action(
+    rule: &(Vec<Term>, Term, Term),
+    props: &[u64; NPROPS],
+) -> Option<(u64, u64)> {
+    orule_fire(&rule.0, &rule.1, &rule.2, props)
+}
+
 /// 이 규칙이 이 성질 지점에서 발화하는가(진단용 — 시도 170).
 pub fn rule_covers(rule: &(Vec<Term>, Term, Term), props: &[u64; NPROPS]) -> bool {
     orule_fire(&rule.0, &rule.1, &rule.2, props).is_some()

@@ -80,6 +80,16 @@ fn main() {
     // 덮을 수 없다. 조건 언어 9가지와 인가 지점 3.5배에도 불변이던 147의 정체가
     // 이것인지 잰다 — 그렇다면 상한은 라이브러리가 아니라 표적 과제의 성질이다.
     let mut inprinciple_blocked = 0usize;
+    // GEN3 관계 계층의 깔때기와 **관계 표현의 원리상 상한**(시도 194).
+    // 관계 서명(상대들의 성질 집합)까지 포함해도 구별되지 않는 객체가 몇 개나
+    // 남는가 — 표현 교체의 실효를 속성 상한(122)과 직접 비교하는 유일한 방법.
+    let rel_lib = Library::load(
+        std::env::var("MONAD_ARC_RELLIB")
+            .unwrap_or_else(|_| "C:\\0.ASKIM ALL-VIN\\31.Homage AI\\monad-rellib.tsv".into()),
+    )
+    .unwrap_or_default();
+    let (mut rel_sel_nonempty, mut rel_reproduce, mut rel_blocked) = (0usize, 0usize, 0usize);
+    let (mut rel_uncovered, mut rel_norule, mut rel_filtered) = (0usize, 0usize, 0usize);
     // 짝 없는 출력의 성질(시도 179): 복제로 기술 가능한가, 진짜 출현인가
     let (mut ap_total, mut ap_sc, mut ap_s, mut ap_novel) = (0usize, 0usize, 0usize, 0usize);
     let mut ap_tasks_copyable = 0usize;
@@ -155,6 +165,46 @@ fn main() {
             });
             if blocked {
                 inprinciple_blocked += 1;
+            }
+        }
+        // GEN3: 관계 서명까지 포함한 원리상 상한 + 선택/재현 깔때기
+        {
+            let rs = monad_envs::arc_relrule::task_rsites(&train);
+            for (a, sa) in rs.iter().enumerate() {
+                if sa.delta.is_none() {
+                    continue;
+                }
+                let blocked = rs.iter().enumerate().any(|(b, sb)| {
+                    b != a
+                        && sb.props == sa.props
+                        && sb.targets == sa.targets
+                        && sb.delta != sa.delta
+                });
+                if blocked {
+                    rel_blocked += 1;
+                }
+            }
+            let rsel = monad_envs::arc_relrule::select_rel_consistent(&rel_lib, &train);
+            // GEN2에서 이해를 열었던 원인 분해를 GEN3에도 적용한다
+            for site in rs.iter().filter(|s| s.delta.is_some()) {
+                if rsel
+                    .iter()
+                    .any(|r| monad_envs::arc_relrule::rel_rule_covers(r, site))
+                {
+                    continue;
+                }
+                rel_uncovered += 1;
+                if monad_envs::arc_relrule::rel_raw_correct_exists(&rel_lib, site) {
+                    rel_filtered += 1;
+                } else {
+                    rel_norule += 1;
+                }
+            }
+            if !rsel.is_empty() {
+                rel_sel_nonempty += 1;
+                if monad_envs::arc_relrule::rel_rules_reproduce(&rsel, &train) {
+                    rel_reproduce += 1;
+                }
             }
         }
         let sel = select_obj_consistent(&lib, &train);
@@ -253,6 +303,20 @@ fn main() {
     println!(
         "       → 진짜 출현이 하나도 없는(복제만으로 기술 가능한) 과제: **{}건**",
         ap_tasks_copyable
+    );
+    println!(
+        "\n  🔷 GEN3 관계 계층: 규칙 {}개 · 일관 규칙 존재 {}건 · 훈련 재현 {}건",
+        rel_lib.entries.len(),
+        rel_sel_nonempty,
+        rel_reproduce
+    );
+    println!(
+        "     ★ **관계 표현의 원리상 차단**: {}개/{} (속성 표현은 {}개) — 표현 교체의 실효",
+        rel_blocked, changed_objs, inprinciple_blocked
+    );
+    println!(
+        "     └ GEN3 미발화 바뀐 객체 {}개: 정답 규칙 **부재** {}개 · **필터 탈락** {}개",
+        rel_uncovered, rel_norule, rel_filtered
     );
     println!("\n▶ 판정:");
     if n_attemptable < 5 {
