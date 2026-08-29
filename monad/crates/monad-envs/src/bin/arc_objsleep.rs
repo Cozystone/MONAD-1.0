@@ -10,7 +10,7 @@
 use monad_core::abstraction::{Library, Provenance};
 use monad_envs::arc_data::load_dir;
 use monad_envs::arc_objrule::{
-    extract_obj_rules, sleep_obj_abstract, sleep_obj_cross, sleep_obj_refine,
+    extract_obj_rules, sleep_obj_abstract, sleep_obj_cross, sleep_obj_refine_rounds,
 };
 
 fn main() {
@@ -70,9 +70,23 @@ fn main() {
     println!(
         "과제 간 일반화: 시도 {tried_x}회 → 새 규칙 {added_x}개 (서로 다른 과제의 경험쌍)"
     );
-    // 스키마 정련 — 일반화 사다리의 다음 칸(시도 171): 우연히 굳은 상수를 푼다
-    let (tried_r, added_r) = sleep_obj_refine(&mut lib);
-    println!("스키마 정련: 시도 {tried_r}회 → 새 규칙 {added_r}개 (스키마 간 재일반화)");
+    // 일반화 사다리(시도 173): 고정점까지 오른다 — 라운드마다 더 일반적인 층이
+    // 쌓이고, MDL이 스스로 멈춘다. 여러 층이 공존한 채 과제의 증거가 고른다.
+    let rounds: usize = std::env::var("MONAD_ARC_REFINE_ROUNDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(6);
+    let log = sleep_obj_refine_rounds(&mut lib, rounds);
+    let total_added: usize = log.iter().map(|(_, a)| a).sum();
+    println!(
+        "일반화 사다리: {}라운드 → 새 규칙 {}개 (라운드별 {})",
+        log.len(),
+        total_added,
+        log.iter()
+            .map(|(_, a)| a.to_string())
+            .collect::<Vec<_>>()
+            .join("+")
+    );
     let _ = lib.save(&lib_path);
     println!(
         "일반화 시도 {tried}회 → **새 규칙 {added}개** (라이브러리 {} → {}) · {:.1}초",

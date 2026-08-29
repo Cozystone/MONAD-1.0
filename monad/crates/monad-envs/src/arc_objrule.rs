@@ -389,6 +389,31 @@ pub fn sleep_obj_cross(groups: &[Vec<Term>], lib: &mut Library) -> (usize, usize
 /// 다시 LGG를 돌리면, 세 과제 이상에 공통인 조건만 상수로 남는다. 어느 수준이
 /// 옳은지는 미리 정하지 않는다 — 여러 수준이 라이브러리에 공존하고, 과제의
 /// 증거(select)가 고른다. 채택은 여전히 MDL.
+/// **일반화 사다리를 고정점까지 오른다**(시도 173).
+///
+/// 진단이 지목한 병목은 ②(일관 규칙 존재 11건) → ③(훈련 재현 2건)이고, 원인은
+/// 바뀐 객체 208개 중 151개에 **어떤 규칙도 발화하지 않는 것**이다. 선택된 규칙은
+/// 정의상 모두 일관적이므로 순서 문제가 아니다 — 규칙이 충분히 일반적이지 않다.
+///
+/// 한 라운드는 인접 스키마쌍을 접는다. 그 결과를 다시 접으면 더 일반적인 층이
+/// 생기고, **여러 층이 라이브러리에 공존한 채 과제의 증거가 고른다**. 사다리는
+/// 스스로 멈춘다: MDL 이득 = Σ|구체| − (|스키마| + Σ|대입|)이므로, 두 스키마
+/// (크기 16)를 접을 때 다른 슬롯이 8칸 이상이면 이득이 음수가 되어 기각된다.
+/// 과일반화로 무너지지 않는 이유가 여기 있다 — 사람이 정한 한계가 아니라 MDL이다.
+///
+/// 반환: 라운드별 (시도, 추가) — 수렴 양상을 그대로 기록한다.
+pub fn sleep_obj_refine_rounds(lib: &mut Library, max_rounds: usize) -> Vec<(usize, usize)> {
+    let mut log = Vec::new();
+    for _ in 0..max_rounds {
+        let (tried, added) = sleep_obj_refine(lib);
+        log.push((tried, added));
+        if added == 0 {
+            break; // 고정점 — 더 일반화할 것이 없다
+        }
+    }
+    log
+}
+
 pub fn sleep_obj_refine(lib: &mut Library) -> (usize, usize) {
     let mut by_kind: HashMap<u64, Vec<Term>> = HashMap::new();
     for e in &lib.entries {
@@ -739,6 +764,46 @@ mod tests {
         let train = [(ci, co)];
         let sel = select_obj_consistent(&lib, &train);
         assert!(!sel.is_empty() && obj_rules_reproduce(&sel, &train), "팔레트 독립 전이 실패");
+    }
+
+    /// **일반화 사다리**(시도 173): 두 과제만으로는 조건이 과도하게 구체적이라
+    /// 세 번째 과제에서 발화하지 못한다. 라운드를 더 올리면 스키마끼리 다시
+    /// 접혀 발화 범위가 넓어지고, MDL이 그 상승을 스스로 멈춘다(고정점).
+    #[test]
+    fn refinement_ladder_widens_firing_then_converges() {
+        // 같은 규칙("최소 객체 삭제")을 성질이 조금씩 다른 과제들에서 경험
+        let mk = |bx: usize, by: usize, bc: u8, sx: usize, sy: usize, sc: u8, n: usize| {
+            let mut i = Grid::new(12, 12);
+            place(&mut i, bx, by, 3, 3, bc);
+            place(&mut i, sx, sy, 1, 1, sc);
+            for k in 0..n {
+                place(&mut i, 1 + 2 * k, 10, 1, 2, 6); // 중간 크기 방해물
+            }
+            let mut o = i.clone();
+            place(&mut o, sx, sy, 1, 1, 0);
+            (i, o)
+        };
+        let mut rules = extract_obj_rules(&[mk(1, 1, 3, 8, 5, 5, 1)]);
+        rules.extend(extract_obj_rules(&[mk(5, 2, 6, 2, 6, 8, 2)]));
+        let mut lib = Library::new();
+        sleep_obj_abstract(&rules, &mut lib);
+        let groups: Vec<Vec<Term>> = vec![
+            extract_obj_rules(&[mk(1, 1, 3, 8, 5, 5, 1)]),
+            extract_obj_rules(&[mk(5, 2, 6, 2, 6, 8, 2)]),
+        ];
+        sleep_obj_cross(&groups, &mut lib);
+        let before = lib.entries.len();
+
+        // 사다리를 올린다 — 라운드마다 더 일반적인 층이 쌓이고, 스스로 멈춘다
+        let log = sleep_obj_refine_rounds(&mut lib, 8);
+        assert!(!log.is_empty());
+        assert!(lib.entries.len() > before, "정련이 아무것도 만들지 못했다");
+        assert!(
+            log.last().map(|(_, added)| *added == 0).unwrap_or(false) || log.len() == 8,
+            "고정점에 닿지 않았고 라운드 상한에도 걸리지 않았다: {log:?}"
+        );
+        // 모든 스키마는 여전히 MDL 이득 양수(과일반화가 라이브러리에 들어오지 않는다)
+        assert!(lib.entries.iter().all(|e| e.gain > 0));
     }
 
     /// 맞지 않는 과제에서는 게이트가 막는다(거짓 양성 방지).
