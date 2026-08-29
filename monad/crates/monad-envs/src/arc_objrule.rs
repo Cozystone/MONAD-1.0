@@ -39,6 +39,25 @@ const ACT_MOVE: u64 = 3;
 /// v3(시도 180): **복제** — 원본은 남고 사본이 생긴다. 다른 행동과 달리
 /// **가산적**이다(한 객체가 여러 사본을 낳을 수 있다). param = 인코딩된 (dx,dy).
 const ACT_COPY: u64 = 4;
+/// v4(시도 204): **자기 크기 단위 복제**. 계량이 지목한 형태 —
+/// 100% 덮개인데 재현 실패한 6건이 **전부** 사본 때문이었고(유지 훼손 0건),
+/// 원인은 절대 오프셋이 색 상수처럼 과제를 넘지 못한다는 것이다.
+/// "내 너비만큼 오른쪽"은 크기·배치가 달라도 성립한다.
+const ACT_COPY_REL: u64 = 5;
+/// 상대 오프셋 인코딩(배수 −4..=4).
+const RELC_BASE: u64 = 2000;
+fn encode_relc(kx: i64, ky: i64) -> u64 {
+    RELC_BASE + ((kx + 4) as u64) * 9 + ((ky + 4) as u64)
+}
+fn decode_relc(v: u64) -> Option<(i64, i64)> {
+    if v < RELC_BASE {
+        return None;
+    }
+    let r = v - RELC_BASE;
+    let kx = (r / 9) as i64 - 4;
+    let ky = (r % 9) as i64 - 4;
+    (kx.abs() <= 4 && ky.abs() <= 4).then_some((kx, ky))
+}
 /// 시도 170~171의 계량 판정: 18종 확장(x/y 순위·모양 클래스·구멍·색 유일·비율)은
 /// 모호쌍을 428→164로 줄였지만 **홀드아웃 전이를 2→0으로 죽였다** — 성질 수에
 /// 비례해 쌍 LGG에서 우연히 상수로 굳는 슬롯이 늘기 때문(과잉 구체화). 스키마
@@ -554,6 +573,11 @@ pub fn actual_deltas(i: &Grid, o: &Grid) -> Option<Vec<Option<u64>>> {
 #[derive(Clone, Debug)]
 pub struct Site {
     pub props: [u64; NPROPS],
+    /// 이 객체의 bbox 크기 — **상대 복제 오프셋**을 푸는 데 쓴다(시도 204).
+    /// 계량이 지목한 형태: 100% 덮개인데 재현 실패한 6건이 **전부** 사본 때문이었고,
+    /// 절대 오프셋은 색 상수처럼 과제를 넘지 못한다. "내 너비만큼"은 넘는다.
+    pub obj_w: usize,
+    pub obj_h: usize,
     /// 배타적 행동(유지=None · 재색 · 이동 · 삭제).
     pub delta: Option<u64>,
     /// 이 객체가 낳은 사본들의 오프셋(인코딩) — 없으면 빈 벡터.
@@ -579,6 +603,17 @@ pub fn extract_obj_rules(train: &[(Grid, Grid)]) -> Vec<Term> {
             // 복제는 배타적 행동과 독립이므로 짝 확정 여부와 무관하게 기록한다
             for &c in &copies[a] {
                 out.push(rule_term(&props[a], ACT_COPY, c));
+                // **자기 크기 단위**로도 표현되면 그 형태도 남긴다 — 전이되는 쪽은
+                // 이쪽이다(절대 오프셋은 과제를 넘지 못한다).
+                if let Some((dx, dy)) = decode_move(c) {
+                    let (w, h) = (objs[a].w as i64, objs[a].h as i64);
+                    if w > 0 && h > 0 && dx % w == 0 && dy % h == 0 {
+                        let (kx, ky) = (dx / w, dy / h);
+                        if kx.abs() <= 4 && ky.abs() <= 4 {
+                            out.push(rule_term(&props[a], ACT_COPY_REL, encode_relc(kx, ky)));
+                        }
+                    }
+                }
             }
             if !matched[a] {
                 continue; // 짝 미확정(이동 후보 등) — 델타를 단정하지 않는다
@@ -917,8 +952,14 @@ pub fn task_props(train: &[(Grid, Grid)]) -> Vec<Site> {
         }
         let objs = decompose(i);
         let props = object_props(i, &objs);
-        for ((p, d), c) in props.into_iter().zip(deltas).zip(copies) {
-            sites.push(Site { props: p, delta: d, copies: c });
+        for (ix, ((p, d), c)) in props.into_iter().zip(deltas).zip(copies).enumerate() {
+            sites.push(Site {
+                props: p,
+                delta: d,
+                copies: c,
+                obj_w: objs[ix].w,
+                obj_h: objs[ix].h,
+            });
         }
     }
     sites
@@ -961,7 +1002,13 @@ pub fn task_props_partial(train: &[(Grid, Grid)]) -> Vec<Site> {
             if !matched[ix] && c.is_empty() {
                 continue; // 델타 미확정 — 씨앗도 반례도 될 수 없다
             }
-            sites.push(Site { props: p, delta: d, copies: c });
+            sites.push(Site {
+                props: p,
+                delta: d,
+                copies: c,
+                obj_w: objs[ix].w,
+                obj_h: objs[ix].h,
+            });
         }
     }
     sites
@@ -1163,6 +1210,12 @@ fn action_ok(k: u64, p: u64, site: &Site) -> bool {
         // 복제는 가산적 — 이 객체가 실제로 그 오프셋의 사본을 낳았는가
         return site.copies.contains(&p);
     }
+    if k == ACT_COPY_REL {
+        // 상대 오프셋은 이 객체의 크기로 풀어 절대 오프셋과 대조한다
+        let Some((kx, ky)) = decode_relc(p) else { return false };
+        let (w, h) = (site.obj_w as i64, site.obj_h as i64);
+        return site.copies.contains(&encode_move(kx * w, ky * h));
+    }
     match site.delta {
         None => k == ACT_RECOLOR && p == site.props[0], // 자기 색 재색 = 유지와 동치
         Some(10) => k == ACT_DELETE,
@@ -1276,9 +1329,21 @@ pub fn apply_obj_rules(rules: &[(Vec<Term>, Term, Term)], g: &Grid) -> Grid {
     for (ix, p) in props.iter().enumerate() {
         for (cond, kind, param) in rules {
             let Some((k, val)) = orule_fire(cond, kind, param, p) else { continue };
-            if k == ACT_COPY {
-                if !copy_acts[ix].contains(&val) {
-                    copy_acts[ix].push(val);
+            if k == ACT_COPY || k == ACT_COPY_REL {
+                // 상대 오프셋은 이 객체의 크기로 풀어 절대 오프셋으로 통일한다
+                let abs = if k == ACT_COPY_REL {
+                    match decode_relc(val) {
+                        Some((kx, ky)) => encode_move(
+                            kx * objs[ix].w as i64,
+                            ky * objs[ix].h as i64,
+                        ),
+                        None => continue,
+                    }
+                } else {
+                    val
+                };
+                if !copy_acts[ix].contains(&abs) {
+                    copy_acts[ix].push(abs);
                 }
             } else if acts[ix].is_none() {
                 acts[ix] = Some((k, val));

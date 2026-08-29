@@ -94,6 +94,13 @@ fn main() {
     // 지금까지 결합의 게이트 통과만 봤고 덮개 자체는 잰 적이 없다.
     let (mut union_covered, mut gen2_only, mut gen3_only, mut both_cov) =
         (0usize, 0usize, 0usize, 0usize);
+    // **③까지의 거리**(시도 202): ②인 과제들이 100% 덮개에서 얼마나 떨어져 있나.
+    // 95%인 과제가 있으면 밀 가치가 있고, 전부 낮으면 연접으로도 안 열린다.
+    let mut per_task_cov: Vec<(usize, usize)> = Vec::new(); // (덮은 수, 바뀐 수)
+    // 100% 덮개인데 재현 실패하는 과제의 원인(시도 203):
+    // 덮개 부족이 아닌 다른 이유 — 사본 누락 / 유지 객체 오염 / 잔여 셀
+    let (mut full_cov_fail, mut fcf_copy, mut fcf_stay, mut fcf_cells) =
+        (0usize, 0usize, 0usize, 0usize);
     // 짝 없는 출력의 성질(시도 179): 복제로 기술 가능한가, 진짜 출현인가
     let (mut ap_total, mut ap_sc, mut ap_s, mut ap_novel) = (0usize, 0usize, 0usize, 0usize);
     let mut ap_tasks_copyable = 0usize;
@@ -270,6 +277,43 @@ fn main() {
         }
         n_sel_nonempty += 1;
         sel_lens += sel.len();
+        {
+            let st = task_props(&train);
+            let changed: Vec<_> = st.iter().filter(|s| s.delta.is_some()).collect();
+            let cov = changed
+                .iter()
+                .filter(|s| sel.iter().any(|r| rule_covers(r, &s.props)))
+                .count();
+            per_task_cov.push((cov, changed.len()));
+            // 100% 덮개인데 재현 실패면 원인을 가른다
+            if cov == changed.len() && !obj_rules_reproduce(&sel, &train) {
+                full_cov_fail += 1;
+                // 사본이 필요한 객체가 있는가(덮개 지표는 delta만 셌다)
+                if st.iter().any(|x| !x.copies.is_empty()) {
+                    fcf_copy += 1;
+                }
+                // 유지해야 하는데 바뀐 객체가 있는가
+                let mut stay_broken = false;
+                let mut wrong_cells = 0usize;
+                for (i, o) in &train {
+                    let got = apply_obj_rules(&sel, i);
+                    for y in 0..o.h.min(got.h) {
+                        for x in 0..o.w.min(got.w) {
+                            if got.get(x, y) != o.get(x, y) {
+                                wrong_cells += 1;
+                                if i.get(x, y) == o.get(x, y) {
+                                    stay_broken = true; // 원래 맞던 셀을 망쳤다
+                                }
+                            }
+                        }
+                    }
+                }
+                if stay_broken {
+                    fcf_stay += 1;
+                }
+                fcf_cells += wrong_cells;
+            }
+        }
         if !obj_rules_reproduce(&sel, &train) {
             continue;
         }
@@ -348,6 +392,28 @@ fn main() {
   🔶 **합집합 덮개**(시도 200): {}개/{} — GEN2 단독 {} · GEN3 단독 {} · 둘 다 {}",
         union_covered, changed_objs, gen2_only, gen3_only, both_cov
     );
+    if !per_task_cov.is_empty() {
+        let mut ratios: Vec<f64> = per_task_cov
+            .iter()
+            .map(|(c, t)| if *t == 0 { 1.0 } else { *c as f64 / *t as f64 })
+            .collect();
+        ratios.sort_by(|a, b| b.partial_cmp(a).unwrap());
+        let shown: Vec<String> = ratios.iter().map(|r| format!("{:.0}%", r * 100.0)).collect();
+        println!(
+            "\n  📏 ③까지의 거리 — ② 과제별 덮개율(내림차순): {}",
+            shown.join(" ")
+        );
+        println!(
+            "     100% 도달 {}건 · 90%↑ {}건 · 50%↑ {}건",
+            ratios.iter().filter(|r| **r >= 0.999).count(),
+            ratios.iter().filter(|r| **r >= 0.9).count(),
+            ratios.iter().filter(|r| **r >= 0.5).count()
+        );
+        println!(
+            "     └ 100% 덮개인데 재현 실패 {}건: 사본 필요 {}건 · 유지 객체 훼손 {}건 · 총 오차 셀 {}",
+            full_cov_fail, fcf_copy, fcf_stay, fcf_cells
+        );
+    }
     println!("\n▶ 판정:");
     if n_attemptable < 5 {
         println!("  **행동 어휘 병목** — 재색·삭제만으로 완전 기술되는 홀드아웃 과제가 {}건뿐.", n_attemptable);
