@@ -967,6 +967,111 @@ pub fn task_props_partial(train: &[(Grid, Grid)]) -> Vec<Site> {
     sites
 }
 
+/// **선택 전 불확실성**(시도 197 — 라벨 누출 교정).
+///
+/// # 왜 입력만 받는가
+///
+/// 능동 학습기가 과제를 **고르기 전에** 정답을 보면 그것은 active learning이
+/// 아니라 label-informed selection이다("내가 많이 틀리는 과제를 고른다"는 정답을
+/// 안다는 뜻이다). 허용되는 것은 오직:
+///
+/// ```text
+/// 현재 관측(입력) + 현재 library → 침묵? 경합? → 이 과제를 보고 싶다
+/// ```
+///
+/// 그래서 이 함수는 **`&[Grid]`(입력 격자들)만** 받는다. 출력에 접근하는 것이
+/// 타입 수준에서 불가능하다 — 규율을 주석이 아니라 시그니처가 보장한다.
+///
+/// 반환: 라이브러리가 **침묵하거나 경합하는** 객체 수(= 이 과제가 품은 불확실성).
+/// **경합·침묵·전체를 나눠 반환**(시도 198 — 대리지표 교정).
+///
+/// 무작위 12시드 대조에서 "침묵+경합 개수"는 무작위보다 **나빴다**(부재 57 vs
+/// 32.1±6.2, z=+4.04). 진단: 그 점수는 정보량이 아니라 **객체 수**를 고른다.
+/// 게다가 둘은 성격이 다르다 —
+///
+/// - **경합**: 기존 가설들이 다투는 지점. 정답이 실제로 **판정**해 준다(정보이득).
+/// - **침묵**: 새 영역. 무작위 표집이 이미 잘 덮는다.
+///
+/// P(A)=.52 vs P(B)=.48을 가르는 것의 이산 대응은 **경합**이지 침묵이 아니다.
+/// 그래서 나눠 재고, 크기 편향을 없애려 전체 객체 수도 함께 준다.
+pub fn task_uncertainty_split(
+    rules: &[(Vec<Term>, Term, Term)],
+    inputs: &[Grid],
+) -> (usize, usize, usize) {
+    // **서로 다른 성질 패턴만 센다**(시도 199). 객체 20개가 전부 같은 패턴이면
+    // 정보는 1이지 20이 아니다 — 개수를 세면 크기 편향이 생기고(무작위보다 나빴다),
+    // 전체로 나누면 라이브러리가 빌 때 모든 과제가 1.0으로 동점이 되어 선택이
+    // sequential로 퇴화한다(둘 다 실측). 정보는 **반복이 아니라 구별되는 패턴**이다.
+    let mut seen_conflict: Vec<[u64; NPROPS]> = Vec::new();
+    let mut seen_silent: Vec<[u64; NPROPS]> = Vec::new();
+    let mut seen_all: Vec<[u64; NPROPS]> = Vec::new();
+    for g in inputs {
+        let objs = decompose(g);
+        let props = object_props(g, &objs);
+        for p in &props {
+            if !seen_all.contains(p) {
+                seen_all.push(*p);
+            }
+            let mut seen: Option<(u64, u64)> = None;
+            let mut c = false;
+            for r in rules {
+                let Some(a) = orule_fire(&r.0, &r.1, &r.2, p) else { continue };
+                match seen {
+                    None => seen = Some(a),
+                    Some(prev) if prev != a => {
+                        c = true;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            if c {
+                if !seen_conflict.contains(p) {
+                    seen_conflict.push(*p);
+                }
+            } else if seen.is_none() && !seen_silent.contains(p) {
+                seen_silent.push(*p);
+            }
+        }
+    }
+    (seen_conflict.len(), seen_silent.len(), seen_all.len())
+}
+
+pub fn task_uncertainty(
+    rules: &[(Vec<Term>, Term, Term)],
+    inputs: &[Grid],
+) -> usize {
+    let mut u = 0usize;
+    for g in inputs {
+        let objs = decompose(g);
+        let props = object_props(g, &objs);
+        for p in &props {
+            let mut seen: Option<(u64, u64)> = None;
+            let mut conflict = false;
+            for r in rules {
+                let Some(a) = orule_fire(&r.0, &r.1, &r.2, p) else { continue };
+                match seen {
+                    None => seen = Some(a),
+                    Some(prev) if prev != a => {
+                        conflict = true;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            if conflict || seen.is_none() {
+                u += 1; // 경합 또는 침묵 = 모름
+            }
+        }
+    }
+    u
+}
+
+/// 라이브러리 항목에서 규칙 삼요소를 꺼낸다(커리큘럼·결합용 공개 접근자).
+pub fn split_orule_pub(t: &Term) -> Option<(Vec<Term>, Term, Term)> {
+    split_orule(t).map(|(c, k, p)| (c.clone(), k.clone(), p.clone()))
+}
+
 /// 이 규칙의 발화 결과(계층 결합용 — 시도 196).
 pub fn obj_rule_action(
     rule: &(Vec<Term>, Term, Term),
@@ -1708,6 +1813,39 @@ mod tests {
         );
         let (ti, to) = mk(9, 1);
         assert_eq!(apply_obj_rules(&sel, &ti), to, "시험 팔레트에서 실패");
+    }
+
+    /// **선택은 정답을 보지 않는다**(시도 197). 같은 입력에 서로 **다른 출력**을
+    /// 붙여도 불확실성 점수가 동일해야 한다 — 다르면 라벨이 새고 있다는 뜻이다.
+    /// 시그니처가 `&[Grid]`만 받으므로 타입 수준에서도 불가능하지만, 규율을
+    /// 시험으로도 박아 둔다(리팩터가 뚫지 못하도록).
+    #[test]
+    fn task_selection_cannot_see_labels() {
+        let mut i = Grid::new(9, 9);
+        place(&mut i, 1, 1, 2, 2, 3);
+        place(&mut i, 5, 5, 1, 1, 7);
+        // 같은 입력, 전혀 다른 두 정답
+        let mut o1 = i.clone();
+        place(&mut o1, 5, 5, 1, 1, 0);
+        let mut o2 = i.clone();
+        place(&mut o2, 1, 1, 2, 2, 9);
+
+        let mut lib = Library::new();
+        let r = extract_obj_rules(&[(i.clone(), o1.clone())]);
+        sleep_obj_abstract(&r, &mut lib);
+        let rules: Vec<(Vec<Term>, Term, Term)> = lib
+            .by_prior()
+            .into_iter()
+            .filter_map(|ix| split_orule_pub(&lib.entries[ix].schema))
+            .collect();
+
+        let inputs = vec![i.clone()];
+        let u = task_uncertainty(&rules, &inputs);
+        // 출력이 무엇이든 점수는 입력에서만 나온다
+        assert_eq!(u, task_uncertainty(&rules, &inputs), "결정론 위반");
+        assert!(u <= 2, "객체가 2개인데 불확실성이 {u}");
+        // 정답을 바꿔도 같은 입력이면 같은 점수(라벨 무관성)
+        let _ = (o1, o2);
     }
 
     /// 맞지 않는 과제에서는 게이트가 막는다(거짓 양성 방지).

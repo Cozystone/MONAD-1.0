@@ -41,7 +41,18 @@ fn main() {
     let mut sources: Vec<String> = Vec::new();
     // 반례 집합(시도 182): 경험 과제의 모든 관측 지점 — 조건 탈락의 근거
     let mut per_task: Vec<Vec<Site>> = Vec::new();
-    for task in tasks.iter().take(take) {
+    // 커리큘럼 목록이 있으면 **그 과제들만** 쓴다(능동 선택). 없으면 앞 take개(수동).
+    let cur_list: Vec<String> = std::env::var("MONAD_ARC_CUR_LIST")
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|t| t.lines().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+        .unwrap_or_default();
+    let selected: Vec<&monad_envs::arc_data::ArcTask> = if cur_list.is_empty() {
+        tasks.iter().take(take).collect()
+    } else {
+        tasks.iter().filter(|t| cur_list.contains(&t.name)).collect()
+    };
+    for task in selected {
         let train: Vec<_> = task
             .train
             .iter()
