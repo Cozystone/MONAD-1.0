@@ -632,25 +632,34 @@ pub fn extract_obj_rules(train: &[(Grid, Grid)]) -> Vec<Term> {
 }
 
 /// 수면: 델타 경험을 일반화한다 — 이웃쌍 + 3창(과제 내 구조). 채택은 MDL.
-pub fn sleep_obj_abstract(rules: &[Term], lib: &mut Library) -> (usize, usize) {
+/// 규칙마다 **어느 과제에서 왔는지**를 함께 받는다. 창(window)에 들어온 규칙의
+/// 과제만 출처로 찍는다 — 창 밖 과제는 이 스키마와 아무 상관이 없다.
+pub fn sleep_obj_abstract(rules: &[(String, Term)], lib: &mut Library) -> (usize, usize) {
     let (mut tried, mut added) = (0usize, 0usize);
-    for w in rules.windows(2) {
-        tried += 1;
-        if let Some(a) = generalize(w) {
+    let mut fold = |w: &[(String, Term)], lib: &mut Library, tried: &mut usize, added: &mut usize| {
+        *tried += 1;
+        let terms: Vec<Term> = w.iter().map(|(_, t)| t.clone()).collect();
+        if let Some(a) = generalize(&terms) {
+            let mut src: Vec<String> = Vec::new();
+            for (n, _) in w {
+                if !src.contains(n) {
+                    src.push(n.clone());
+                }
+            }
+            lib.minting = src;
             if lib.insert(&a, Provenance::MonadDerived) {
-                added += 1;
+                *added += 1;
             }
         }
+    };
+    for w in rules.windows(2) {
+        fold(w, lib, &mut tried, &mut added);
     }
     // 같은 행동끼리 더 넓게 접기(3개 창 — 그룹 전체는 과일반화라 이웃 3개까지만)
     for w in rules.windows(3) {
-        tried += 1;
-        if let Some(a) = generalize(w) {
-            if lib.insert(&a, Provenance::MonadDerived) {
-                added += 1;
-            }
-        }
+        fold(w, lib, &mut tried, &mut added);
     }
+    lib.minting.clear();
     (tried, added)
 }
 
@@ -660,7 +669,10 @@ pub fn sleep_obj_abstract(rules: &[Term], lib: &mut Library) -> (usize, usize) {
 ///
 /// 같은 행동 종류끼리만 쌍을 만든다(종류가 다르면 LGG가 행동을 변수로 만들어
 /// 실행 불가 규칙이 된다). 채택은 여전히 MDL + 중복 병합.
-pub fn sleep_obj_cross(groups: &[Vec<Term>], lib: &mut Library) -> (usize, usize) {
+/// 각 그룹이 **어느 과제의 것인지**를 함께 받는다. 두 그룹을 접어 만든 스키마의
+/// 출처는 **그 두 과제뿐**이다 — 전체 출처 목록을 찍으면 규칙 하나가 150개
+/// 과제 모두에게 가려져 쓸모가 없어지고, 파일도 백 배로 부푼다.
+pub fn sleep_obj_cross(groups: &[(String, Vec<Term>)], lib: &mut Library) -> (usize, usize) {
     let kind_of = |t: &Term| -> u64 {
         split_orule(t)
             .and_then(|(_, k, _)| match k {
@@ -672,14 +684,17 @@ pub fn sleep_obj_cross(groups: &[Vec<Term>], lib: &mut Library) -> (usize, usize
     let (mut tried, mut added) = (0usize, 0usize);
     for gi in 0..groups.len() {
         for gj in gi + 1..groups.len() {
-            for a in &groups[gi] {
+            // 이 스키마를 낳는 것은 이 두 과제뿐이다.
+            let pair_src = vec![groups[gi].0.clone(), groups[gj].0.clone()];
+            for a in &groups[gi].1 {
                 let ka = kind_of(a);
-                for b in &groups[gj] {
+                for b in &groups[gj].1 {
                     if ka != kind_of(b) {
                         continue;
                     }
                     tried += 1;
                     if let Some(abs) = generalize(&[a.clone(), b.clone()]) {
+                        lib.minting = pair_src.clone();
                         if lib.insert(&abs, Provenance::MonadDerived) {
                             added += 1;
                         }
@@ -688,6 +703,7 @@ pub fn sleep_obj_cross(groups: &[Vec<Term>], lib: &mut Library) -> (usize, usize
             }
         }
     }
+    lib.minting.clear();
     (tried, added)
 }
 
@@ -733,9 +749,11 @@ pub fn sleep_obj_cross(groups: &[Vec<Term>], lib: &mut Library) -> (usize, usize
 /// 과제의 지점들에 대해서만 한다.
 ///
 /// `per_task`: 과제별 관측 지점 묶음.
-pub fn sleep_obj_drop(per_task: &[Vec<Site>], lib: &mut Library) -> (usize, usize) {
+pub fn sleep_obj_drop(per_task: &[(String, Vec<Site>)], lib: &mut Library) -> (usize, usize) {
     let (mut tried, mut added) = (0usize, 0usize);
-    for sites in per_task {
+    for (task_name, sites) in per_task {
+        // 이 과제에서 나온 것은 이 과제를 풀 때 쓰이면 안 된다(표적 배제).
+        lib.minting = vec![task_name.clone()];
     // 각 관측 지점의 행동을 씨앗으로 삼는다(유지는 제외 — 규칙으로 쓸 것이 없다)
     for seed in sites {
         let mut seeds: Vec<(u64, u64)> = Vec::new();
@@ -837,6 +855,7 @@ pub fn sleep_obj_drop(per_task: &[Vec<Site>], lib: &mut Library) -> (usize, usiz
         }
     }
     }
+    lib.minting.clear();
     (tried, added)
 }
 
@@ -877,10 +896,13 @@ pub fn sleep_obj_refine_rounds(lib: &mut Library, max_rounds: usize) -> Vec<(usi
 }
 
 pub fn sleep_obj_refine(lib: &mut Library) -> (usize, usize) {
-    let mut by_kind: HashMap<u64, Vec<Term>> = HashMap::new();
+    // 스키마와 **그 출처**를 함께 들고 다닌다. 사다리에서 나온 항목은 두 부모의
+    // 경험에서 나온 것이므로 출처가 비면 안 된다 — 비면 `usable_for`가 늘 참이
+    // 되어 자기 과제를 자기가 푸는 누출이 생긴다.
+    let mut by_kind: HashMap<u64, Vec<(Term, Vec<String>)>> = HashMap::new();
     for e in &lib.entries {
         if let Some((_, Term::Const(k), _)) = split_orule(&e.schema) {
-            by_kind.entry(*k).or_default().push(e.schema.clone());
+            by_kind.entry(*k).or_default().push((e.schema.clone(), e.sources.clone()));
         }
     }
     let (mut tried, mut added) = (0usize, 0usize);
@@ -889,16 +911,26 @@ pub fn sleep_obj_refine(lib: &mut Library) -> (usize, usize) {
     for k in kinds {
         let mut group = by_kind.remove(&k).unwrap();
         // 결정론적 순서(문자열 표기) — 인접쌍이 재현 가능해야 한다
-        group.sort_by_key(|t| format!("{t}"));
+        group.sort_by_key(|(t, _)| format!("{t}"));
         for w in group.windows(2) {
             tried += 1;
-            if let Some(a) = generalize(w) {
+            let pair = [w[0].0.clone(), w[1].0.clone()];
+            if let Some(a) = generalize(&pair) {
+                // 두 부모의 출처 합집합 — 어느 쪽을 빼도 이 스키마는 안 나온다.
+                let mut src = w[0].1.clone();
+                for s in &w[1].1 {
+                    if !src.contains(s) {
+                        src.push(s.clone());
+                    }
+                }
+                lib.minting = src;
                 if lib.insert(&a, Provenance::MonadDerived) {
                     added += 1;
                 }
             }
         }
     }
+    lib.minting.clear();
     (tried, added)
 }
 
@@ -1471,6 +1503,17 @@ pub fn obj_rules_reproduce(rules: &[(Vec<Term>, Term, Term)], train: &[(Grid, Gr
 mod tests {
     use super::*;
 
+    /// 시험용: 규칙에 가짜 출처 이름을 달아 준다(출처 정확도는 별도 시험에서 본다).
+    fn test_named(rules: &[Term]) -> Vec<(String, Term)> {
+        rules.iter().cloned().map(|t| ("exp".to_string(), t)).collect()
+    }
+
+    /// 시험용: 그룹마다 **서로 다른** 과제 이름을 준다(과제 간 접기가 실제로
+    /// 서로 다른 경험을 접는 상황과 같아지도록).
+    fn test_grouped(groups: &[Vec<Term>]) -> Vec<(String, Vec<Term>)> {
+        groups.iter().enumerate().map(|(i, g)| (format!("exp{i}"), g.clone())).collect()
+    }
+
     fn place(g: &mut Grid, x0: usize, y0: usize, w: usize, h: usize, c: u8) {
         for y in y0..y0 + h {
             for x in x0..x0 + w {
@@ -1550,7 +1593,7 @@ mod tests {
         let mut rules = extract_obj_rules(&[mk(1, 1, 3)]);
         rules.extend(extract_obj_rules(&[mk(2, 4, 5)]));
         let mut lib = Library::new();
-        sleep_obj_abstract(&rules, &mut lib);
+        sleep_obj_abstract(&test_named(&rules), &mut lib);
         // (경험과 같은 성질 부류: 비테두리 — x0=0이면 border-touch 성질이 달라
         //  발화하지 않는 것이 올바른 동작이다)
         let (ci, co) = mk(1, 3, 7);
@@ -1579,7 +1622,7 @@ mod tests {
         let mut rules = extract_obj_rules(&[mk((0, 0, 3), (7, 7, 5))]);
         rules.extend(extract_obj_rules(&[mk((5, 2, 6), (1, 6, 8))]));
         let mut lib = Library::new();
-        sleep_obj_abstract(&rules, &mut lib);
+        sleep_obj_abstract(&test_named(&rules), &mut lib);
         assert!(!lib.entries.is_empty(), "수면이 규칙을 만들지 못했다");
 
         // 과제 C: 또 다른 배치·색 — 본 적 없는 조합
@@ -1613,7 +1656,7 @@ mod tests {
         let mut rules = extract_obj_rules(&[mk(3, 5)]);
         rules.extend(extract_obj_rules(&[mk(6, 2)]));
         let mut lib = Library::new();
-        sleep_obj_abstract(&rules, &mut lib);
+        sleep_obj_abstract(&test_named(&rules), &mut lib);
         // param이 변수인 규칙이 실제로 생겼는가
         let has_var_param = lib.entries.iter().any(|e| {
             split_orule(&e.schema)
@@ -1650,8 +1693,8 @@ mod tests {
             .collect();
         let mut lib = Library::new();
         let all: Vec<Term> = groups.iter().flatten().cloned().collect();
-        sleep_obj_abstract(&all, &mut lib);
-        sleep_obj_cross(&groups, &mut lib);
+        sleep_obj_abstract(&test_named(&all), &mut lib);
+        sleep_obj_cross(&test_grouped(&groups), &mut lib);
 
         // 사다리의 목적은 규칙 **수**가 아니라 **발화 범위**다. 본 적 없는 팔레트
         // 과제에서 바뀐 객체를 덮는 규칙이 몇 개인지로 잰다.
@@ -1707,8 +1750,8 @@ mod tests {
             .collect();
         let mut lib = Library::new();
         let all: Vec<Term> = groups.iter().flatten().cloned().collect();
-        sleep_obj_abstract(&all, &mut lib);
-        sleep_obj_cross(&groups, &mut lib);
+        sleep_obj_abstract(&test_named(&all), &mut lib);
+        sleep_obj_cross(&test_grouped(&groups), &mut lib);
         sleep_obj_refine_rounds(&mut lib, 6);
 
         let unseen = [mk(6, 2, 9)];
@@ -1755,8 +1798,8 @@ mod tests {
             .collect();
         let mut lib = Library::new();
         let all: Vec<Term> = groups.iter().flatten().cloned().collect();
-        sleep_obj_abstract(&all, &mut lib);
-        sleep_obj_cross(&groups, &mut lib);
+        sleep_obj_abstract(&test_named(&all), &mut lib);
+        sleep_obj_cross(&test_grouped(&groups), &mut lib);
         let (ci, co) = mk(2, 5, 8);
         let train = [(ci, co)];
         let sel = select_obj_consistent(&lib, &train);
@@ -1788,14 +1831,15 @@ mod tests {
             .collect();
         let mut lgg_lib = Library::new();
         let all: Vec<Term> = groups.iter().flatten().cloned().collect();
-        sleep_obj_abstract(&all, &mut lgg_lib);
-        sleep_obj_cross(&groups, &mut lgg_lib);
+        sleep_obj_abstract(&test_named(&all), &mut lgg_lib);
+        sleep_obj_cross(&test_grouped(&groups), &mut lgg_lib);
         sleep_obj_refine_rounds(&mut lgg_lib, 6);
 
         // 반례 기반 탈락 라이브러리
-        let per_task: Vec<Vec<Site>> = [(3u8, 5u8), (6, 8)]
+        let per_task: Vec<(String, Vec<Site>)> = [(3u8, 5u8), (6, 8)]
             .iter()
-            .map(|&(b, s)| task_props(&[mk(b, s)]))
+            .enumerate()
+            .map(|(n, &(b, s))| (format!("exp{n}"), task_props(&[mk(b, s)])))
             .collect();
         let mut drop_lib = Library::new();
         let (tried, added) = sleep_obj_drop(&per_task, &mut drop_lib);
@@ -1842,8 +1886,8 @@ mod tests {
             (i, o)
         };
         // 경험: 팔레트 (3,5)
-        let per_task: Vec<Vec<Site>> = vec![task_props(&[mk(3, 5)])];
-        assert!(!per_task[0].is_empty(), "경험 과제가 완전 기술되지 않았다");
+        let per_task: Vec<(String, Vec<Site>)> = vec![("exp0".into(), task_props(&[mk(3, 5)]))];
+        assert!(!per_task[0].1.is_empty(), "경험 과제가 완전 기술되지 않았다");
         let mut lib = Library::new();
         let (tried, added) = sleep_obj_drop(&per_task, &mut lib);
         assert!(tried > 0 && added > 0);
@@ -1897,7 +1941,7 @@ mod tests {
 
         let mut lib = Library::new();
         let r = extract_obj_rules(&[(i.clone(), o1.clone())]);
-        sleep_obj_abstract(&r, &mut lib);
+        sleep_obj_abstract(&test_named(&r), &mut lib);
         let rules: Vec<(Vec<Term>, Term, Term)> = lib
             .by_prior()
             .into_iter()
@@ -1927,7 +1971,7 @@ mod tests {
             r
         };
         let mut lib = Library::new();
-        sleep_obj_abstract(&rules, &mut lib);
+        sleep_obj_abstract(&test_named(&rules), &mut lib);
         // 전혀 다른 변환: 큰 것을 재색(작은 것 유지)
         let mut o2 = i.clone();
         place(&mut o2, 0, 0, 2, 2, 7);

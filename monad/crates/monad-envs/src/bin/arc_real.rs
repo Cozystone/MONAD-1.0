@@ -58,6 +58,11 @@ fn main() {
     let ablate = std::env::var("MONAD_ARC_ABLATE").unwrap_or_default();
     // 현미경: 지정 과제의 격자·객체 수·예측을 상세 출력
     let scope = std::env::var("MONAD_ARC_TASK").ok();
+    // **MONAD_DERIVED로 푼 과제 이름**(시도 208). 지금까지는 어블레이션 실행과
+    // 목록을 비교해야만 어느 과제가 MONAD의 것인지 알 수 있었다. 각성이 스스로
+    // 적어 두면 결과가 자기설명적이 되고, 과제마다 "이 과제가 라이브러리에 몇 개를
+    // 기여했고 그 전부가 배제된 채 풀렸는가"를 바로 보일 수 있다.
+    let mut monad_names: Vec<String> = Vec::new();
     // 선택 계층(시도 206): 게이트가 쌍당 결정 하나 — 덮개 요구가 없다
     let (mut sel_gate_pass, mut sel_solved) = (0usize, 0usize);
     let sel_lib = monad_core::abstraction::Library::load(
@@ -73,19 +78,21 @@ fn main() {
     )
     .map(|t| t.lines().map(|s| s.trim().to_string()).collect())
     .unwrap_or_default();
-    // 답 색 계층(시도 207): 출처 앞 200과제에서 배우고 그 밖에 적용한다.
-    // 게이트는 쌍당 결정 하나이고, 규칙이 "슬롯 j"라 구성상 팔레트 독립이다.
+    // 답 색 계층(시도 207→208): **모든** 과제에서 배우고, 과제 T를 풀 때는
+    // T에서 나온 항목만 뺀다(leave-one-out). 앞 200으로 자르던 방식은 과제당
+    // 기준이 더 느슨한 것도 아니면서 경험의 절반을 버렸다 — 시도 207에서
+    // 단색 출력 9건이 출처 5 / 홀드아웃 4로 갈라진 것이 그 대가였다.
     let mut ans_lib = monad_core::abstraction::Library::new();
     let mut ans_sources: Vec<String> = Vec::new();
     {
         let mut per_task = Vec::new();
-        for task in tasks.iter().take(200) {
+        for task in tasks.iter() {
             let tr: Vec<_> =
                 task.train.iter().map(|p| (p.input.clone(), p.output.clone())).collect();
             let r = monad_envs::arc_answer::learn_ans_rules(&tr);
             if !r.is_empty() {
                 ans_sources.push(task.name.clone());
-                per_task.push(r);
+                per_task.push((task.name.clone(), r));
             }
         }
         monad_envs::arc_answer::sleep_ans(&per_task, &mut ans_lib);
@@ -161,9 +168,13 @@ fn main() {
                     continue;
                 }
             }
-            // **답 색 규칙 전이**(시도 207): 출력이 단색인 부류.
-            if !ans_sources.contains(&task.name) {
-                let asel = monad_envs::arc_answer::select_ans_consistent(&ans_lib, &train);
+            // **답 색 규칙 전이**(시도 207→208): 출력이 단색인 부류.
+            // 전역 출처 목록으로 과제를 통째 배제하는 대신 **항목 단위**로 뺀다.
+            // 어블레이션은 **모든** MONAD 계층을 끈다 — 이 두 계층(답 색·선택)이
+            // 어블레이션 밖에 있으면 대조군이 대조군이 아니게 된다.
+            if ablate != "monad" {
+                let ans_view = ans_lib.view_excluding(&task.name);
+                let asel = monad_envs::arc_answer::select_ans_consistent(&ans_view, &train);
                 if !asel.is_empty() {
                     ans_gate_pass += 1;
                     let (slot, dims) = asel[0];
@@ -173,6 +184,7 @@ fn main() {
                     });
                     if all_ok {
                         ans_solved += 1;
+                        monad_names.push(task.name.clone());
                         solved += 1;
                         solved_names.push(task.name.clone());
                         continue;
@@ -182,8 +194,9 @@ fn main() {
             // **선택 규칙 전이**(시도 206): 크기 변환 과제 중 "출력 = 입력 어느
             // 객체의 잘라내기"인 부류. 이 계층의 게이트는 **쌍당 결정 하나**라
             // 과제당 100% 덮개 요구가 없다 — 세션 내내 ③를 막아온 구조의 우회다.
-            if !sel_sources.contains(&task.name) {
-                let ssel = monad_envs::arc_select::select_sel_consistent(&sel_lib, &train);
+            if ablate != "monad" {
+                let sel_view = sel_lib.view_excluding(&task.name);
+                let ssel = monad_envs::arc_select::select_sel_consistent(&sel_view, &train);
                 if monad_envs::arc_select::sel_rules_reproduce(&ssel, &train) {
                     sel_gate_pass += 1;
                     let all_ok = task.test.iter().all(|p| {
@@ -192,6 +205,7 @@ fn main() {
                     });
                     if all_ok {
                         sel_solved += 1;
+                        monad_names.push(task.name.clone());
                         solved += 1;
                         solved_names.push(task.name.clone());
                         continue;
@@ -630,10 +644,34 @@ fn main() {
         )
         .map(|t| t.lines().map(|s| s.trim().to_string()).collect())
         .unwrap_or_default();
+        // 표적 배제는 **항목을 물리적으로 지운 시야**로 한다(플래그로 걸러내면
+        // `entries`를 직접 훑는 경로가 조용히 우회한다). 다만 기여한 적 없는
+        // 과제에는 배제가 아무것도 지우지 않으므로 그때는 복제를 건너뛴다 —
+        // 결과는 같고 각성이 수백 배 빨라진다.
+        let obj_srcs = obj_lib.source_names();
+        let rel_srcs = rel_lib.source_names();
+        let obj_any = obj_lib.has_unattributed_monad();
+        let rel_any = rel_lib.has_unattributed_monad();
         for task in &tasks {
             if solved_names.contains(&task.name) {
                 continue;
             }
+            let obj_cut = obj_any || obj_srcs.contains(&task.name);
+            let rel_cut = rel_any || rel_srcs.contains(&task.name);
+            let obj_owned;
+            let obj_view: &monad_core::abstraction::Library = if obj_cut {
+                obj_owned = obj_lib.view_excluding(&task.name);
+                &obj_owned
+            } else {
+                &obj_lib
+            };
+            let rel_owned;
+            let rel_view: &monad_core::abstraction::Library = if rel_cut {
+                rel_owned = rel_lib.view_excluding(&task.name);
+                &rel_owned
+            } else {
+                &rel_lib
+            };
             let train: Vec<_> =
                 task.train.iter().map(|p| (p.input.clone(), p.output.clone())).collect();
             let (mut ops, rep) =
@@ -696,8 +734,8 @@ fn main() {
                 // 채택한다(전량 적용은 남의 규칙이 오발화해 반드시 깨진다, 시도 158).
                 // **관계 규칙 전이**(GEN3, 시도 192): 존재 양화로 속성 벡터가
                 // 원리상 구분 못 하는 자리(홀드아웃의 58%)를 노린다.
-                if ops.is_none() && !rel_sources.contains(&task.name) {
-                    let sel = monad_envs::arc_relrule::select_rel_consistent(&rel_lib, &train);
+                if ops.is_none() {
+                    let sel = monad_envs::arc_relrule::select_rel_consistent(rel_view, &train);
                     if monad_envs::arc_relrule::rel_rules_reproduce(&sel, &train) {
                         rel_gate_pass += 1;
                         let all_ok = task.test.iter().all(|p| {
@@ -706,6 +744,7 @@ fn main() {
                         if all_ok {
                             rel_solved += 1;
                             reuse_solved += 1;
+                            monad_names.push(task.name.clone());
                             solved += 1;
                             solved_names.push(task.name.clone());
                             continue;
@@ -715,13 +754,10 @@ fn main() {
                 // **두 계층 결합 전이**(시도 196): GEN2(속성)와 GEN3(관계)는
                 // 서로 다른 객체를 덮는다. 과제 게이트는 바뀐 객체가 **전부**
                 // 덮여야 열리므로, 합집합이 각 계층 단독보다 유리하다.
-                if ops.is_none()
-                    && !obj_sources.contains(&task.name)
-                    && !rel_sources.contains(&task.name)
-                {
+                if ops.is_none() {
                     let osel =
-                        monad_envs::arc_objrule::select_obj_consistent(&obj_lib, &train);
-                    let rsel = monad_envs::arc_relrule::select_rel_consistent(&rel_lib, &train);
+                        monad_envs::arc_objrule::select_obj_consistent(obj_view, &train);
+                    let rsel = monad_envs::arc_relrule::select_rel_consistent(rel_view, &train);
                     if !osel.is_empty() && !rsel.is_empty() {
                         if monad_envs::arc_relrule::combined_reproduce(&osel, &rsel, &train) {
                             comb_gate_pass += 1;
@@ -732,6 +768,7 @@ fn main() {
                             if all_ok {
                                 comb_solved += 1;
                                 reuse_solved += 1;
+                                monad_names.push(task.name.clone());
                                 solved += 1;
                                 solved_names.push(task.name.clone());
                                 continue;
@@ -740,13 +777,13 @@ fn main() {
                     }
                 }
                 // **객체 델타 규칙 전이**(시도 166): 승자 표현 위의 성질 조건 규칙.
-                // 같은 오염 차단 규율 — 출처 과제 자신에게는 시도하지 않는다.
-                if ops.is_none() && !obj_sources.contains(&task.name) {
-                    let mut sel = monad_envs::arc_objrule::select_obj_consistent(&obj_lib, &train);
+                // 같은 오염 차단 규율 — 이 과제가 낳은 항목은 시야에서 빠진다.
+                if ops.is_none() {
+                    let mut sel = monad_envs::arc_objrule::select_obj_consistent(obj_view, &train);
                     // 단독 일관성으로 재현하지 못하면 **결정 목록**으로 다시 고른다
                     // (예외 우선 + 일반 후속 — 진단이 지목한 미발화 58%의 처방)
                     if !monad_envs::arc_objrule::obj_rules_reproduce(&sel, &train) {
-                        sel = monad_envs::arc_objrule::select_obj_cover(&obj_lib, &train, 24);
+                        sel = monad_envs::arc_objrule::select_obj_cover(&obj_view, &train, 24);
                     }
                     // **반복 적용**(시도 191): 규칙이 한 번 적용되면 객체의 성질이
                     // 바뀌어 다른 규칙이 발화한다. 재현되는 **최소 깊이**를 찾는다
@@ -765,6 +802,7 @@ fn main() {
                         if all_ok {
                             obj_solved += 1;
                             reuse_solved += 1;
+                            monad_names.push(task.name.clone());
                             solved += 1;
                             solved_names.push(task.name.clone());
                             continue;
@@ -850,6 +888,7 @@ fn main() {
                             if closed {
                                 obj_layered += 1;
                                 reuse_solved += 1;
+                                monad_names.push(task.name.clone());
                                 solved += 1;
                                 solved_names.push(task.name.clone());
                                 continue;
@@ -878,6 +917,7 @@ fn main() {
                         if all_ok {
                             patch_solved += 1;
                             reuse_solved += 1;
+                            monad_names.push(task.name.clone());
                             solved += 1;
                             solved_names.push(task.name.clone());
                             continue;
@@ -915,6 +955,7 @@ fn main() {
                             if all_ok {
                                 residual_closed += 1;
                                 reuse_solved += 1;
+                                monad_names.push(task.name.clone());
                                 solved += 1;
                                 solved_names.push(task.name.clone());
                                 continue;
@@ -929,6 +970,7 @@ fn main() {
                 });
                 if all_ok {
                     reuse_solved += 1;
+                    monad_names.push(task.name.clone());
                     solved += 1;
                     solved_names.push(task.name.clone());
                 }
@@ -1006,13 +1048,31 @@ fn main() {
             patch_gate_pass,
             patch_solved
         );
+        // **회계**: 답 색·선택 계층도 MONAD_DERIVED다. 두 계층은 `reuse_solved`가
+        // 선언되기 전(위쪽)에서 판정되므로 따로 세어 여기서 합친다 — 안 합치면
+        // 그 해결이 **동결 솔버의 공으로 잘못 기록된다**(지금까지 두 계층이 0건이라
+        // 드러나지 않았을 뿐, 출처 회계를 뒤집는 오류다).
+        let monad_solved = reuse_solved + ans_solved + sel_solved;
         println!(
             "\n▶▶ **최종 해결 {} / 400 = {:.1}%** (동결 솔버 {} + MONAD_DERIVED {})",
             solved,
             100.0 * solved as f64 / tasks.len() as f64,
-            solved - reuse_solved,
-            reuse_solved
+            solved - monad_solved,
+            monad_solved
         );
+        // **자기설명적 출처 분리**: MONAD가 푼 과제마다, 그 과제가 라이브러리에
+        // 몇 개를 기여했는지 적는다. 기여분은 전부 배제된 채로 풀린 것이므로
+        // 이 숫자가 클수록 "자기 것으로 자기를 푼 게 아니다"가 강하게 성립한다.
+        if !monad_names.is_empty() {
+            println!("\n  MONAD_DERIVED 해결 과제(각각 자기 기여분은 배제됨):");
+            for n in &monad_names {
+                println!(
+                    "    {n} — 이 과제가 기여한 항목: 객체 {}개 · 관계 {}개 (전부 배제)",
+                    obj_lib.sourced_by(n),
+                    rel_lib.sourced_by(n)
+                );
+            }
+        }
         // 해결 목록을 남긴다 — oracle 진단기가 미해결 집합을 알아야 한다
         let _ = std::fs::write(
             std::env::var("MONAD_ARC_SOLVED")

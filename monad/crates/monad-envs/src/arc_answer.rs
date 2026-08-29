@@ -176,9 +176,10 @@ pub fn learn_ans_rules(train: &[(Grid, Grid)]) -> Vec<(usize, Dims)> {
 }
 
 /// 수면: 배운 규칙을 라이브러리에 넣는다(출처 태그 포함).
-pub fn sleep_ans(per_task: &[Vec<(usize, Dims)>], lib: &mut Library) -> usize {
+pub fn sleep_ans(per_task: &[(String, Vec<(usize, Dims)>)], lib: &mut Library) -> usize {
     let mut added = 0usize;
-    for rules in per_task {
+    for (task_name, rules) in per_task {
+        lib.minting = vec![task_name.clone()];
         for &(slot, dims) in rules {
             let schema = build(slot, dims);
             let abs = monad_core::abstraction::Abstraction {
@@ -254,7 +255,7 @@ mod tests {
         let learned = learn_ans_rules(&[mk(3, 5)]);
         assert!(!learned.is_empty(), "규칙을 못 배웠다");
         let mut lib = Library::new();
-        assert!(sleep_ans(&[learned], &mut lib) > 0);
+        assert!(sleep_ans(&[("exp0".to_string(), learned)], &mut lib) > 0);
 
         // 전혀 다른 팔레트에서 그대로 성립한다
         for (a, b) in [(6u8, 2u8), (9, 1), (7, 4)] {

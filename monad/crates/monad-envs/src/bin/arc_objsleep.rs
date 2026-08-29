@@ -37,10 +37,10 @@ fn main() {
     let before = lib.entries.len();
 
     let mut rules = Vec::new();
-    let mut groups: Vec<Vec<monad_core::abstraction::Term>> = Vec::new();
+    let mut groups: Vec<(String, Vec<monad_core::abstraction::Term>)> = Vec::new();
     let mut sources: Vec<String> = Vec::new();
     // 반례 집합(시도 182): 경험 과제의 모든 관측 지점 — 조건 탈락의 근거
-    let mut per_task: Vec<Vec<Site>> = Vec::new();
+    let mut per_task: Vec<(String, Vec<Site>)> = Vec::new();
     // 커리큘럼 목록이 있으면 **그 과제들만** 쓴다(능동 선택). 없으면 앞 take개(수동).
     let cur_list: Vec<String> = std::env::var("MONAD_ARC_CUR_LIST")
         .ok()
@@ -65,10 +65,11 @@ fn main() {
             // 확정된 객체는 참인 델타를 갖는다 — 인가 지점을 늘리는 유일한 축.
             let st = task_props_partial(&train);
             if !st.is_empty() {
-                per_task.push(st);
+                per_task.push((task.name.clone(), st));
             }
-            rules.extend(r.iter().cloned());
-            groups.push(r);
+            // 규칙마다 낳은 과제를 달고 다닌다 — 출처를 정확히 찍기 위해서다.
+            rules.extend(r.iter().cloned().map(|t| (task.name.clone(), t)));
+            groups.push((task.name.clone(), r));
         }
     }
     let _ = std::fs::write(&src_path, sources.join("\n"));
@@ -84,6 +85,9 @@ fn main() {
     }
 
     let t0 = std::time::Instant::now();
+    // 두 반일반화는 이제 **자기가 접은 과제만** 출처로 찍는다(함수 안에서).
+    // 전체 목록을 찍던 초안은 규칙 하나를 150개 과제 모두에게 가려 버려서
+    // 사실상 무용지물로 만들었다 — 엄격한 것과 부정확한 것은 다르다.
     let (tried, added) = sleep_obj_abstract(&rules, &mut lib);
     // 과제 간 수면 — 전이 규칙의 원천(시도 168)
     let (tried_x, added_x) = sleep_obj_cross(&groups, &mut lib);

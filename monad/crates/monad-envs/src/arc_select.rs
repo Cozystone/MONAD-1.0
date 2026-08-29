@@ -116,9 +116,10 @@ fn has_counterexample(cond: &[Term], sites: &[SelSite]) -> bool {
 }
 
 /// **수면**: 정답 객체의 성질에서 출발해 무관한 슬롯을 떨어뜨린다(반례 검사).
-pub fn sleep_sel_drop(per_task: &[Vec<SelSite>], lib: &mut Library) -> (usize, usize) {
+pub fn sleep_sel_drop(per_task: &[(String, Vec<SelSite>)], lib: &mut Library) -> (usize, usize) {
     let (mut tried, mut added) = (0usize, 0usize);
-    for sites in per_task {
+    for (task_name, sites) in per_task {
+        lib.minting = vec![task_name.clone()];
         for seed in sites {
             tried += 1;
             let mut cond: Vec<Term> = seed.cands[seed.answer]
@@ -236,11 +237,11 @@ mod tests {
             place(&mut o, 0, 0, 3, 3, bc);
             (i, o)
         };
-        let per_task: Vec<Vec<SelSite>> = vec![
-            task_sel_sites(&[mk(1, 1, 3, 5)]),
-            task_sel_sites(&[mk(5, 2, 6, 8)]),
+        let per_task: Vec<(String, Vec<SelSite>)> = vec![
+            ("exp0".into(), task_sel_sites(&[mk(1, 1, 3, 5)])),
+            ("exp1".into(), task_sel_sites(&[mk(5, 2, 6, 8)])),
         ];
-        assert!(per_task.iter().all(|s| !s.is_empty()), "선택 관측 추출 실패");
+        assert!(per_task.iter().all(|(_, s)| !s.is_empty()), "선택 관측 추출 실패");
         let mut lib = Library::new();
         let (tried, added) = sleep_sel_drop(&per_task, &mut lib);
         assert!(tried > 0 && added > 0, "선택 규칙이 만들어지지 않았다");

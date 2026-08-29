@@ -274,6 +274,28 @@ pub struct Entry {
     /// ②**신규 재구체화 판정** — 여기에 없는 대입으로 풀면 그것은 경험의
     /// 복사가 아니라 일반화의 산물이다.
     pub bindings: Vec<HashMap<u32, Term>>,
+    /// **이 스키마를 낳은 경험의 이름들**(과제 단위).
+    ///
+    /// 지금까지 출처 분리는 계층마다 "출처 과제 이름 목록" 파일 하나로 했다.
+    /// 그것은 거칠다 — 어떤 과제가 무엇 하나라도 기여했으면 그 과제는 영원히
+    /// 집계에서 빠진다. 항목마다 출처를 달면 **표적별 배제**(leave-one-out)가
+    /// 가능해진다: 과제 T를 풀 때 T에서 나온 항목만 빼고 나머지 399과제의
+    /// 경험을 전부 쓴다. 과제당 기준은 **더 엄격**해지고(출처가 자기 표적이
+    /// 되는 일이 원리적으로 없다) 경험량은 두 배가 된다.
+    pub sources: Vec<String>,
+    /// **혼자서** 이 스키마를 구성한 과제들(`sources`의 부분집합).
+    ///
+    /// 한 과제의 증거만으로 이 스키마가 만들어졌다면 그 과제는 여기 들어간다.
+    /// 두 과제를 접어 만든 것(과제 간 반일반화)은 어느 쪽도 혼자가 아니므로
+    /// 들어가지 않는다.
+    ///
+    /// 이 구분이 필요한 이유: 표적 T가 기여했다는 사실만으로 배제하면 **너무
+    /// 엄격**하다. 다른 과제 U가 **혼자서** 같은 스키마를 만든 적이 있다면 그
+    /// 스키마는 T가 없어도 존재했을 것이고, 그것으로 T를 푸는 것은 순환이 아니다.
+    /// 실제로 시도 207까지 유일한 code-free 획득 과제(`aabf363d`)는 출처 풀이
+    /// 400으로 넓어지자 자기도 565개 항목의 출처가 되었다 — 이 구분이 없으면
+    /// 정당한 전이까지 함께 지워진다.
+    pub solo_sources: Vec<String>,
 }
 
 /// 항목당 보관하는 구체 대입의 상한(라이브러리 비대 방지).
@@ -286,6 +308,55 @@ impl Entry {
         let w = (self.wins as f64 + 1.0) / (self.tries as f64 + 2.0);
         w * (1.0 + (self.gain.max(0) as f64).ln_1p())
     }
+
+    /// **표적 배제 판정**: 이 항목을 과제 `target`을 풀 때 써도 되는가.
+    ///
+    /// 규칙은 가장 엄격한 것을 쓴다 — **`target`이 조금이라도 기여했으면 못
+    /// 쓴다.** 느슨한 대안("`target` 아닌 출처가 하나라도 있으면 쓴다")도
+    /// 생각했지만 **틀렸다**: 그 논리는 각 출처가 자기 증거만으로 같은 스키마를
+    /// 독립 구성했을 때만 성립하고, 그것은 [`Library::insert`]의 병합 경로에서만
+    /// 참이다. 과제를 가로지르는 반일반화(`sleep_obj_abstract`/`_cross`)는
+    /// 여러 과제의 증거로 스키마를 **함께** 만들므로, 출처 하나를 빼면 결과가
+    /// 달라진다. 두 경우를 항목 단위로 구분해 관리하는 것보다 전부 엄격하게
+    /// 배제하는 편이 수율은 낮아도 주장이 무너지지 않는다.
+    ///
+    /// 순서대로 세 가지를 묻는다:
+    ///
+    /// 1. 사람이 심은 원시어인가 → 과제에서 나온 것이 아니므로 늘 쓴다.
+    /// 2. 출처가 **비어 있는** MONAD 항목인가 → **쓰지 않는다.** 출처를 모르면
+    ///    `target` 자신에게서 나왔을 가능성을 배제할 수 없다. 이 조항이 없으면
+    ///    출처 열이 없던 옛 라이브러리 파일을 읽는 것만으로 배제가 통째로
+    ///    무력화된다(조용히, 아무 오류 없이).
+    /// 3. `target`이 아닌 과제가 **혼자서** 이 스키마를 만든 적이 있는가 →
+    ///    그렇다면 이 스키마는 `target` 없이도 존재했으므로 쓴다.
+    ///    아니라면 `target`이 조금이라도 기여했는지로 판정한다.
+    ///
+    /// 3번이 [`solo_sources`](Entry::solo_sources)가 필요한 이유다. 그것 없이
+    /// "기여했으면 무조건 배제"만 쓰면, 여러 과제가 **각자 독립적으로** 재구성한
+    /// 가장 일반적인 규칙일수록 더 많은 표적에서 지워진다 — 전이에 가장 값진
+    /// 규칙을 골라서 버리는 셈이다.
+    pub fn usable_for(&self, target: &str) -> bool {
+        self.usable_for_mode(target, false)
+    }
+
+    /// `strict = true`면 3번(독립 재구성 예외)을 **끄고** "기여했으면 무조건 배제"로
+    /// 판정한다. 두 수치를 나란히 보고하기 위한 것이다 — 엄격판은 반박하기 가장
+    /// 어려운 하한이고, 기본판은 과학적으로 더 정확하다. 어느 쪽을 썼는지 모른 채
+    /// 숫자만 비교하는 일이 없도록 스위치로 남긴다.
+    pub fn usable_for_mode(&self, target: &str, strict: bool) -> bool {
+        match self.provenance {
+            Provenance::HumanDerived => true,
+            Provenance::MonadDerived => {
+                if self.sources.is_empty() {
+                    return false;
+                }
+                if !strict && self.solo_sources.iter().any(|s| s != target) {
+                    return true;
+                }
+                !self.sources.iter().any(|s| s == target)
+            }
+        }
+    }
 }
 
 /// 축적되는 스키마 라이브러리. **디스크에 영속**한다 —
@@ -293,6 +364,23 @@ impl Entry {
 #[derive(Clone, Debug, Default)]
 pub struct Library {
     pub entries: Vec<Entry>,
+    /// 지금 **어느 경험들에서** 배우는 중인가 — [`insert`](Library::insert)가
+    /// 이 이름들을 새 항목의 출처로 찍는다. 수면 루프가 과제마다 세팅한다.
+    /// 과제를 가로지르는 반일반화는 기여한 이름을 **전부** 넣는다. 영속되지
+    /// 않는다(기록은 항목의 `sources`에 남는다).
+    pub minting: Vec<String>,
+    /// 스키마 표기 → 항목 위치. [`insert`](Library::insert)의 중복 검사를
+    /// 선형 탐색에서 상수 시간으로 바꾼다(**의미는 그대로** — 같은 스키마를
+    /// 찾아 병합하는 동작이 동일하다). 사다리 수면이 라이브러리 크기의
+    /// 제곱으로 느려지던 원인이었다.
+    ///
+    /// `entries`가 공개 필드라 밖에서 직접 밀어 넣을 수 있으므로, 길이가
+    /// 어긋나면 **스스로 다시 만든다**. 어긋난 채로 쓰이는 일이 없다.
+    index: HashMap<String, usize>,
+    /// 색인을 만들 때의 `entries` 길이. 맵 크기와 비교하지 **않는다** — 파일에
+    /// 같은 스키마가 둘 있으면 맵이 항상 더 작아 매번 다시 만들게 되고, 없애려던
+    /// 제곱 비용이 그대로 돌아온다.
+    index_len: usize,
 }
 
 impl Library {
@@ -300,17 +388,91 @@ impl Library {
         Library::default()
     }
 
+    /// **표적 배제 시야**(leave-one-out): 과제 `target`에서 나온 항목만 뺀
+    /// 라이브러리. 이것으로 풀린 것은 "다른 경험에서 얻은 구조가 미접촉 과제를
+    /// 풀었다"가 정의대로 참이다.
+    pub fn view_excluding(&self, target: &str) -> Library {
+        self.view_excluding_mode(target, std::env::var("MONAD_PROV_STRICT").is_ok())
+    }
+
+    /// 배제 규칙을 명시해 시야를 만든다([`Entry::usable_for_mode`] 참고).
+    pub fn view_excluding_mode(&self, target: &str, strict: bool) -> Library {
+        Library {
+            entries: self
+                .entries
+                .iter()
+                .filter(|e| e.usable_for_mode(target, strict))
+                .cloned()
+                .collect(),
+            minting: Vec::new(),
+            // 비워 두면 다음 insert에서 스스로 만들어진다(길이 불일치 감지).
+            index: HashMap::new(),
+            index_len: 0,
+        }
+    }
+
+    /// 이 과제가 기여한 항목 수(보고용).
+    pub fn sourced_by(&self, task: &str) -> usize {
+        self.entries.iter().filter(|e| e.sources.iter().any(|s| s == task)).count()
+    }
+
+    /// 이 라이브러리에 기여한 **모든 과제 이름**.
+    pub fn source_names(&self) -> std::collections::HashSet<String> {
+        self.entries.iter().flat_map(|e| e.sources.iter().cloned()).collect()
+    }
+
+    /// 출처가 비어 있는 MONAD 항목이 하나라도 있는가.
+    ///
+    /// 없다면 **기여한 적 없는 과제에 대해 [`view_excluding`](Library::view_excluding)은
+    /// 원본과 완전히 같다** — 그런 과제에서는 복제를 건너뛰어도 결과가 바뀌지
+    /// 않는다. 각성 한 번에 라이브러리를 수백 번 복제하던 비용의 대부분이
+    /// 여기서 사라진다. 이 조건이 깨지면(옛 파일을 읽는 등) 지름길을 쓰지 않는다.
+    pub fn has_unattributed_monad(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.provenance == Provenance::MonadDerived && e.sources.is_empty())
+    }
+
+    /// 색인이 `entries`와 어긋났으면 다시 만든다(밖에서 직접 밀어 넣은 경우).
+    fn ensure_index(&mut self) {
+        if self.index_len == self.entries.len() {
+            return;
+        }
+        self.index.clear();
+        for (i, e) in self.entries.iter().enumerate() {
+            self.index.insert(write_term(&e.schema), i);
+        }
+        self.index_len = self.entries.len();
+    }
+
     /// 압축하는 일반화만 받아들인다. 이미 같은 스키마가 있으면 근거만 보강한다.
     pub fn insert(&mut self, abs: &Abstraction, provenance: Provenance) -> bool {
         if abs.gain <= 0 {
             return false;
         }
-        if let Some(e) = self.entries.iter_mut().find(|e| e.schema == abs.schema) {
+        self.ensure_index();
+        let key = write_term(&abs.schema);
+        if let Some(e) = self.index.get(&key).and_then(|&i| self.entries.get_mut(i)) {
             e.support = e.support.saturating_add(abs.instances.len() as u32);
             e.gain = e.gain.max(abs.gain);
             for b in &abs.instances {
                 if e.bindings.len() < MAX_KEPT_BINDINGS && !e.bindings.contains(b) {
                     e.bindings.push(b.clone());
+                }
+            }
+            // 같은 스키마를 다시 구성한 경험도 출처다 — 병합 경로에서 놓치면
+            // 그 과제가 자기 자신을 푸는 데 쓰이게 된다.
+            for src in &self.minting {
+                if !e.sources.contains(src) {
+                    e.sources.push(src.clone());
+                }
+            }
+            // 한 과제의 증거만으로 같은 스키마가 다시 나왔다면 그 과제는
+            // **혼자서** 이것을 만든 것이다 — 전이의 정당성이 여기서 나온다.
+            if self.minting.len() == 1 {
+                let s = &self.minting[0];
+                if !e.solo_sources.contains(s) {
+                    e.solo_sources.push(s.clone());
                 }
             }
             return false;
@@ -329,7 +491,11 @@ impl Library {
             tries: 0,
             wins: 0,
             bindings,
+            sources: self.minting.clone(),
+            solo_sources: if self.minting.len() == 1 { self.minting.clone() } else { Vec::new() },
         });
+        self.index.insert(key, self.entries.len() - 1);
+        self.index_len = self.entries.len();
         true
     }
 
@@ -415,7 +581,7 @@ impl Library {
                 })
                 .collect();
             s.push_str(&format!(
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
                 write_term(&e.schema),
                 match e.provenance {
                     Provenance::HumanDerived => "H",
@@ -425,7 +591,9 @@ impl Library {
                 e.support,
                 e.tries,
                 e.wins,
-                binds.join("|")
+                binds.join("|"),
+                e.sources.join(","),
+                e.solo_sources.join(",")
             ));
         }
         let mut f = std::fs::File::create(path)?;
@@ -475,6 +643,17 @@ impl Library {
                 tries: tr.parse().unwrap_or(0),
                 wins: w.parse().unwrap_or(0),
                 bindings,
+                // 8·9열이 없는 옛 파일도 읽힌다. 출처가 비면 MONAD 항목은
+                // `usable_for`에서 쓰이지 않으므로, 빠진 열은 누출이 아니라
+                // 손실로 끝난다(안전한 방향의 실패).
+                sources: it
+                    .next()
+                    .map(|c| c.split(',').filter(|x| !x.is_empty()).map(str::to_string).collect())
+                    .unwrap_or_default(),
+                solo_sources: it
+                    .next()
+                    .map(|c| c.split(',').filter(|x| !x.is_empty()).map(str::to_string).collect())
+                    .unwrap_or_default(),
             });
         }
         Ok(lib)
@@ -680,5 +859,185 @@ mod tests {
         let t = app(9, vec![Term::Var(2), c(42), app(0, vec![]), app(1, vec![c(5)])]);
         let s = write_term(&t);
         assert_eq!(read_term(&s).unwrap(), t);
+    }
+
+    /// **표적 배제**: 과제 A에서 나온 항목은 A를 풀 때 안 보이고, B를 풀 때 보인다.
+    #[test]
+    fn view_excluding_hides_only_the_targets_own_entries() {
+        let mut lib = Library::new();
+        let mk = |n: u64| Abstraction {
+            schema: app(1, vec![Term::Var(0), c(n)]),
+            instances: vec![HashMap::new()],
+            gain: 5,
+        };
+        lib.minting = vec!["A".into()];
+        assert!(lib.insert(&mk(1), Provenance::MonadDerived));
+        lib.minting = vec!["B".into()];
+        assert!(lib.insert(&mk(2), Provenance::MonadDerived));
+        lib.minting.clear();
+
+        assert_eq!(lib.entries.len(), 2);
+        assert_eq!(lib.view_excluding("A").entries.len(), 1, "A의 항목이 A에게 보인다");
+        assert_eq!(lib.view_excluding("B").entries.len(), 1, "B의 항목이 B에게 보인다");
+        assert_eq!(lib.view_excluding("C").entries.len(), 2, "무관한 과제가 손해를 본다");
+    }
+
+    /// **독립 재구성은 전이의 근거다.** 같은 스키마를 A와 B가 **각자 혼자서**
+    /// 만들었으면 둘 다 `solo_sources`에 들어가고, 그 스키마는 A에게도 B에게도
+    /// 보인다 — B 혼자 만든 적이 있으니 A가 없어도 존재했을 것이기 때문이다.
+    /// 이것을 구분하지 않고 "기여했으면 무조건 배제"하면, 여러 과제가 독립적으로
+    /// 재구성한 **가장 일반적인 규칙**일수록 더 많이 지워진다.
+    #[test]
+    fn independently_reconstructed_schema_stays_usable_for_its_sources() {
+        let mut lib = Library::new();
+        let same = Abstraction {
+            schema: app(1, vec![Term::Var(0), c(7)]),
+            instances: vec![HashMap::new()],
+            gain: 5,
+        };
+        lib.minting = vec!["A".into()];
+        assert!(lib.insert(&same, Provenance::MonadDerived));
+        lib.minting = vec!["B".into()];
+        assert!(!lib.insert(&same, Provenance::MonadDerived), "같은 스키마는 병합된다");
+        lib.minting.clear();
+
+        assert_eq!(lib.entries[0].sources, vec!["A".to_string(), "B".to_string()]);
+        assert_eq!(lib.entries[0].solo_sources, vec!["A".to_string(), "B".to_string()]);
+        assert_eq!(
+            lib.view_excluding_mode("A", false).entries.len(),
+            1,
+            "B가 혼자 만든 것이 A에게 가렸다"
+        );
+        assert_eq!(
+            lib.view_excluding_mode("B", false).entries.len(),
+            1,
+            "A가 혼자 만든 것이 B에게 가렸다"
+        );
+        // 엄격판은 같은 항목을 두 기여자 모두에게서 가린다 — 반박하기 가장
+        // 어려운 하한. 두 규칙의 차이가 실제로 존재함을 여기서 고정한다.
+        assert!(lib.view_excluding_mode("A", true).entries.is_empty(), "엄격판이 안 가렸다");
+        assert!(lib.view_excluding_mode("B", true).entries.is_empty(), "엄격판이 안 가렸다");
+        assert_eq!(lib.view_excluding_mode("C", true).entries.len(), 1);
+    }
+
+    /// **함께 만든 것은 기여자 모두에게서 가려진다.** 두 과제를 접어 만든 스키마는
+    /// 어느 쪽도 혼자 만들지 않았으므로 `solo_sources`가 비고, A에게도 B에게도
+    /// 보이지 않는다. 여기서 병합 논리를 잘못 적용하면 과제가 자기 자신을 푸는 데
+    /// 쓰인다 — 이 세션에서 가장 비쌌던 오류 유형이다.
+    #[test]
+    fn jointly_built_schema_is_hidden_from_every_contributor() {
+        let mut lib = Library::new();
+        lib.minting = vec!["A".into(), "B".into()];
+        assert!(lib.insert(
+            &Abstraction {
+                schema: app(1, vec![Term::Var(0), c(9)]),
+                instances: vec![HashMap::new()],
+                gain: 5,
+            },
+            Provenance::MonadDerived
+        ));
+        lib.minting.clear();
+
+        assert!(lib.entries[0].solo_sources.is_empty(), "함께 만든 것이 단독으로 기록됐다");
+        assert!(lib.view_excluding("A").entries.is_empty(), "A가 기여했는데 A에게 보인다");
+        assert!(lib.view_excluding("B").entries.is_empty(), "B가 기여했는데 B에게 보인다");
+        assert_eq!(lib.view_excluding("C").entries.len(), 1, "무관한 과제가 손해를 본다");
+    }
+
+    /// 출처는 디스크를 왕복해도 살아남아야 한다 — 배제는 영속된 라이브러리
+    /// 위에서 이뤄지므로, 직렬화에서 빠지면 배제가 통째로 무력화된다.
+    #[test]
+    fn sources_survive_save_and_load() {
+        let dir = std::env::temp_dir().join("monad_src_roundtrip");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("lib.tsv");
+        let mut lib = Library::new();
+        lib.minting = vec!["task-a".into(), "task-b".into()];
+        lib.insert(
+            &Abstraction {
+                schema: app(1, vec![Term::Var(0), c(3)]),
+                instances: vec![HashMap::new()],
+                gain: 4,
+            },
+            Provenance::MonadDerived,
+        );
+        lib.save(&path).unwrap();
+        let back = Library::load(&path).unwrap();
+        assert_eq!(back.entries.len(), 1);
+        assert_eq!(back.entries[0].sources, vec!["task-a".to_string(), "task-b".to_string()]);
+        // 두 과제가 **함께** 만든 것이므로 단독 출처는 없다 → 둘 다에게서 가려진다
+        assert!(back.entries[0].solo_sources.is_empty());
+        assert!(back.view_excluding("task-a").entries.is_empty());
+        assert!(back.view_excluding("task-b").entries.is_empty());
+        assert_eq!(back.view_excluding("other").entries.len(), 1);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// **출처 없는 MONAD 항목은 아무에게도 안 보인다.** 출처 열이 없던 옛
+    /// 라이브러리 파일을 그대로 읽어 쓰면 배제가 조용히 무력화되는데, 그 실패는
+    /// 오류를 내지 않아 눈에 띄지 않는다. 사람이 심은 원시어는 영향받지 않는다.
+    #[test]
+    fn unattributed_monad_entries_are_never_usable() {
+        let mut lib = Library::new();
+        lib.minting.clear();
+        lib.insert(
+            &Abstraction {
+                schema: app(1, vec![Term::Var(0), c(1)]),
+                instances: vec![HashMap::new()],
+                gain: 3,
+            },
+            Provenance::MonadDerived,
+        );
+        lib.insert(
+            &Abstraction {
+                schema: app(2, vec![Term::Var(0), c(2)]),
+                instances: vec![HashMap::new()],
+                gain: 3,
+            },
+            Provenance::HumanDerived,
+        );
+        assert_eq!(lib.entries.len(), 2);
+        let v = lib.view_excluding("anything");
+        assert_eq!(v.entries.len(), 1, "출처 없는 MONAD 항목이 살아남았다");
+        assert_eq!(v.entries[0].provenance, Provenance::HumanDerived);
+    }
+
+    /// 스키마 색인은 **속도만** 바꾸고 중복 병합 동작은 그대로여야 한다.
+    /// `entries`를 밖에서 직접 밀어 넣어 색인을 어긋나게 한 뒤에도 병합이
+    /// 옳게 되는지 본다 — 어긋난 색인은 조용히 중복 항목을 만든다.
+    #[test]
+    fn schema_index_self_heals_and_preserves_dedup() {
+        let mut lib = Library::new();
+        let a = Abstraction {
+            schema: app(1, vec![Term::Var(0), c(11)]),
+            instances: vec![HashMap::new()],
+            gain: 3,
+        };
+        lib.minting = vec!["t1".into()];
+        assert!(lib.insert(&a, Provenance::MonadDerived));
+
+        // 색인을 모르는 경로로 직접 밀어 넣는다(load가 하는 일과 같다)
+        lib.entries.push(Entry {
+            schema: app(1, vec![Term::Var(0), c(22)]),
+            provenance: Provenance::MonadDerived,
+            gain: 3,
+            support: 1,
+            tries: 0,
+            wins: 0,
+            bindings: Vec::new(),
+            sources: vec!["t2".into()],
+            solo_sources: vec!["t2".into()],
+        });
+
+        // 직접 밀어 넣은 스키마를 다시 insert하면 **병합**되어야 한다
+        let dup = Abstraction {
+            schema: app(1, vec![Term::Var(0), c(22)]),
+            instances: vec![HashMap::new()],
+            gain: 3,
+        };
+        lib.minting = vec!["t3".into()];
+        assert!(!lib.insert(&dup, Provenance::MonadDerived), "중복이 새 항목으로 들어갔다");
+        assert_eq!(lib.entries.len(), 2, "색인 불일치가 중복 항목을 만들었다");
+        assert_eq!(lib.entries[1].sources, vec!["t2".to_string(), "t3".to_string()]);
     }
 }

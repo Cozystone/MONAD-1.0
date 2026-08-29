@@ -7,3 +7,7 @@ data/
 # 로컬 부산물
 *.tmp
 det_run_*.txt
+
+# 실험 배터리 산출물(재생성 가능)
+.battery208/
+.loo-backup/

@@ -31,7 +31,7 @@ fn main() {
     let mut lib = Library::load(&lib_path).unwrap_or_default();
     let before = lib.entries.len();
 
-    let mut per_task: Vec<Vec<RSite>> = Vec::new();
+    let mut per_task: Vec<(String, Vec<RSite>)> = Vec::new();
     let mut sources: Vec<String> = Vec::new();
     let mut total_sites = 0usize;
     for task in tasks.iter().take(take) {
@@ -45,7 +45,7 @@ fn main() {
         if st.iter().any(|s| s.delta.is_some()) {
             sources.push(task.name.clone());
             total_sites += st.len();
-            per_task.push(st);
+            per_task.push((task.name.clone(), st));
         }
     }
     let _ = std::fs::write(&src_path, sources.join("\n"));

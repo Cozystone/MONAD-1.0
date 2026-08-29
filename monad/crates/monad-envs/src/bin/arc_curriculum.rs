@@ -185,11 +185,13 @@ fn main() {
         // 고른 경험으로 즉시 학습한다(다음 선택이 갱신된 앎 위에서 이뤄지도록)
         let tr = &cands[ix].1;
         let r = extract_obj_rules(tr);
-        sleep_obj_abstract(&r, &mut lib);
-        sleep_obj_cross(&[r], &mut lib);
+        let named: Vec<(String, _)> =
+            r.iter().cloned().map(|t| (cands[ix].0.clone(), t)).collect();
+        sleep_obj_abstract(&named, &mut lib);
+        sleep_obj_cross(&[(cands[ix].0.clone(), r)], &mut lib);
         let st: Vec<Site> = task_props_partial(tr);
         if !st.is_empty() {
-            sleep_obj_drop(&[st], &mut lib);
+            sleep_obj_drop(&[(cands[ix].0.clone(), st)], &mut lib);
         }
         if step % 10 == 0 || step + 1 == budget {
             println!(

@@ -257,9 +257,10 @@ fn build(self_cond: Vec<Term>, rel: u64, target_cond: Vec<Term>, kind: u64, para
 /// 씨앗: (바뀐 객체 X, 관계 r, X와 r로 맺어진 상대 Y). self와 target 조건을
 /// 구체값에서 출발해 슬롯을 떨어뜨리고, **self↔target 슬롯 등식**을 시도한다 —
 /// 그 등식이 속성 벡터가 담지 못하는 관계 정보다.
-pub fn sleep_rel_drop(per_task: &[Vec<RSite>], lib: &mut Library) -> (usize, usize) {
+pub fn sleep_rel_drop(per_task: &[(String, Vec<RSite>)], lib: &mut Library) -> (usize, usize) {
     let (mut tried, mut added) = (0usize, 0usize);
-    for sites in per_task {
+    for (task_name, sites) in per_task {
+        lib.minting = vec![task_name.clone()];
         for seed in sites {
             let mut acts: Vec<(u64, u64)> = Vec::new();
             match seed.delta {
@@ -594,8 +595,8 @@ mod tests {
             place(&mut o, 1, 5, 2, 2, 0);
             (i, o)
         };
-        let per_task: Vec<Vec<RSite>> = vec![task_rsites(&[mk(3)])];
-        assert!(!per_task[0].is_empty());
+        let per_task: Vec<(String, Vec<RSite>)> = vec![("exp0".into(), task_rsites(&[mk(3)]))];
+        assert!(!per_task[0].1.is_empty());
         // 속성 벡터로는 두 대상이 구별되지 않음을 먼저 확인(전제의 검증)
         let ps = crate::arc_objrule::task_props_partial(&[mk(3)]);
         let ambiguous = ps.iter().enumerate().any(|(a, sa)| {
@@ -657,7 +658,7 @@ mod tests {
         place(&mut i, 1, 5, 2, 2, 3);
         let mut o = i.clone();
         place(&mut o, 1, 5, 2, 2, 0);
-        let per_task = vec![task_rsites(&[(i.clone(), o)])];
+        let per_task = vec![("exp0".to_string(), task_rsites(&[(i.clone(), o)]))];
         let mut lib = Library::new();
         sleep_rel_drop(&per_task, &mut lib);
         // 전혀 다른 변환: 전부 7로 재색
