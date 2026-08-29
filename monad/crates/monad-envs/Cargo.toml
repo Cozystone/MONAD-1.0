@@ -88,3 +88,11 @@ path = "src/bin/arc_relsleep.rs"
 [[bin]]
 name = "arc-curriculum"
 path = "src/bin/arc_curriculum.rs"
+
+[[bin]]
+name = "arc-sizescan"
+path = "src/bin/arc_sizescan.rs"
+
+[[bin]]
+name = "arc-selsleep"
+path = "src/bin/arc_selsleep.rs"

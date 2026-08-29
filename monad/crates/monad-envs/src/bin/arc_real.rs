@@ -58,6 +58,21 @@ fn main() {
     let ablate = std::env::var("MONAD_ARC_ABLATE").unwrap_or_default();
     // 현미경: 지정 과제의 격자·객체 수·예측을 상세 출력
     let scope = std::env::var("MONAD_ARC_TASK").ok();
+    // 선택 계층(시도 206): 게이트가 쌍당 결정 하나 — 덮개 요구가 없다
+    let (mut sel_gate_pass, mut sel_solved) = (0usize, 0usize);
+    let sel_lib = monad_core::abstraction::Library::load(
+        std::env::var("MONAD_ARC_SELLIB").unwrap_or_else(|_| {
+            "C:\\0.ASKIM ALL-VIN\\31.Homage AI\\monad-sellib.tsv".into()
+        }),
+    )
+    .unwrap_or_default();
+    let sel_sources: Vec<String> = std::fs::read_to_string(
+        std::env::var("MONAD_ARC_SELSRC").unwrap_or_else(|_| {
+            "C:\\0.ASKIM ALL-VIN\\31.Homage AI\\monad-selsource.txt".into()
+        }),
+    )
+    .map(|t| t.lines().map(|s| s.trim().to_string()).collect())
+    .unwrap_or_default();
     let t1 = std::time::Instant::now();
     let mut max_task_ms = 0f32;
     for task in &tasks {
@@ -126,6 +141,25 @@ fn main() {
                     solved += 1;
                     solved_names.push(task.name.clone());
                     continue;
+                }
+            }
+            // **선택 규칙 전이**(시도 206): 크기 변환 과제 중 "출력 = 입력 어느
+            // 객체의 잘라내기"인 부류. 이 계층의 게이트는 **쌍당 결정 하나**라
+            // 과제당 100% 덮개 요구가 없다 — 세션 내내 ③를 막아온 구조의 우회다.
+            if !sel_sources.contains(&task.name) {
+                let ssel = monad_envs::arc_select::select_sel_consistent(&sel_lib, &train);
+                if monad_envs::arc_select::sel_rules_reproduce(&ssel, &train) {
+                    sel_gate_pass += 1;
+                    let all_ok = task.test.iter().all(|p| {
+                        monad_envs::arc_select::apply_sel_rules(&ssel, &p.input).as_ref()
+                            == Some(&p.output)
+                    });
+                    if all_ok {
+                        sel_solved += 1;
+                        solved += 1;
+                        solved_names.push(task.name.clone());
+                        continue;
+                    }
                 }
             }
             max_task_ms = max_task_ms.max(t_task.elapsed().as_secs_f32() * 1000.0);
@@ -532,6 +566,7 @@ fn main() {
         // GEN3 관계 규칙 계층(시도 192) — 존재 양화가 있는 세 번째 계층
         let (mut rel_gate_pass, mut rel_solved) = (0usize, 0usize);
         let (mut comb_gate_pass, mut comb_solved) = (0usize, 0usize);
+
         let rel_lib = monad_core::abstraction::Library::load(
             std::env::var("MONAD_ARC_RELLIB").unwrap_or_else(|_| {
                 "C:\\0.ASKIM ALL-VIN\\31.Homage AI\\monad-rellib.tsv".into()
@@ -916,6 +951,12 @@ fn main() {
         println!(
             "  두 계층 결합(시도 196): 훈련 재현 통과 {}건 → **해결 {}건** (속성 ∪ 관계)",
             comb_gate_pass, comb_solved
+        );
+        println!(
+            "  선택 규칙 전이(시도 206): 규칙 {}개 · 훈련 재현 통과 {}건 → **해결 {}건** (무엇이 답인가)",
+            sel_lib.entries.len(),
+            sel_gate_pass,
+            sel_solved
         );
         println!(
             "  패치 규칙 전이: 규칙 {}개 · 증거선택 누적 {}개 · 훈련 재현 통과 {}건 → **해결 {}건** \
