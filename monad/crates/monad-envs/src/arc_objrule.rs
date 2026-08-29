@@ -924,6 +924,38 @@ pub fn task_props(train: &[(Grid, Grid)]) -> Vec<Site> {
     sites
 }
 
+/// **부분 관측 지점**(시도 186) — 보존 법칙의 기전이 지시하는 유일한 축.
+///
+/// 덮개 ≈ (인가 지점 수) × (평균 일반성)이고 일반성↔판별력은 1:1 교환이므로,
+/// 조건 언어를 아무리 바꿔도 곱은 인가 지점 수에 묶인다(아홉 번의 무효). 그러면
+/// 늘려야 할 것은 **지점의 수**다.
+///
+/// 그런데 [`task_props`]는 **완전 기술되는 과제**만 받는다 — 경험을 만드는 79개
+/// 과제 중 26개뿐이다. 나머지 53개에도 **짝이 확정된 객체**는 있고, 그 델타는
+/// 참이다. 시도 167에서 추출기에 적용한 원칙("완전 기술 요구는 추출이 아니라
+/// 게이트의 몫")을 반례 집합에도 적용한다.
+///
+/// 짝이 미확정인 객체는 델타를 모르므로 씨앗으로도 반례로도 쓰지 않는다 —
+/// 그것이 이 완화가 거짓 경험을 만들지 않는 이유다.
+pub fn task_props_partial(train: &[(Grid, Grid)]) -> Vec<Site> {
+    let mut sites: Vec<Site> = Vec::new();
+    for (i, o) in train {
+        if i.w != o.w || i.h != o.h {
+            continue;
+        }
+        let (deltas, matched, copies, _complete) = match_deltas(i, o);
+        let objs = decompose(i);
+        let props = object_props(i, &objs);
+        for (ix, ((p, d), c)) in props.into_iter().zip(deltas).zip(copies).enumerate() {
+            if !matched[ix] && c.is_empty() {
+                continue; // 델타 미확정 — 씨앗도 반례도 될 수 없다
+            }
+            sites.push(Site { props: p, delta: d, copies: c });
+        }
+    }
+    sites
+}
+
 /// 이 규칙이 이 성질 지점에서 발화하는가(진단용 — 시도 170).
 pub fn rule_covers(rule: &(Vec<Term>, Term, Term), props: &[u64; NPROPS]) -> bool {
     orule_fire(&rule.0, &rule.1, &rule.2, props).is_some()

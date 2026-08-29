@@ -11,7 +11,7 @@ use monad_core::abstraction::{Library, Provenance};
 use monad_envs::arc_data::load_dir;
 use monad_envs::arc_objrule::{
     extract_obj_rules, sleep_obj_abstract, sleep_obj_cross, sleep_obj_drop,
-    sleep_obj_refine_rounds, task_props, Site,
+    sleep_obj_refine_rounds, task_props_partial, Site,
 };
 
 fn main() {
@@ -50,7 +50,9 @@ fn main() {
         let r = extract_obj_rules(&train);
         if !r.is_empty() {
             sources.push(task.name.clone());
-            let st = task_props(&train);
+            // 부분 관측 지점(시도 186): 완전 기술되지 않는 과제에서도 짝이
+            // 확정된 객체는 참인 델타를 갖는다 — 인가 지점을 늘리는 유일한 축.
+            let st = task_props_partial(&train);
             if !st.is_empty() {
                 per_task.push(st);
             }

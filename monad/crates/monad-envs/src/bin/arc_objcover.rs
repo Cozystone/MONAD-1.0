@@ -75,6 +75,11 @@ fn main() {
     let (mut dl_rescue, mut dl_rescue_test) = (0usize, 0usize);
     // ① 탈락 사유(시도 178): 상한이 왜 17인가
     let (mut f_size, mut f_in, mut f_out, mut f_both) = (0usize, 0usize, 0usize, 0usize);
+    // **원리상 상한**(시도 187): 라이브러리가 무엇을 담든, 같은 과제 안에 성질이
+    // 같은데 행동이 다른 객체가 있으면 그 객체는 **어떤 성질 패턴으로도** 옳게
+    // 덮을 수 없다. 조건 언어 9가지와 인가 지점 3.5배에도 불변이던 147의 정체가
+    // 이것인지 잰다 — 그렇다면 상한은 라이브러리가 아니라 표적 과제의 성질이다.
+    let mut inprinciple_blocked = 0usize;
     // 짝 없는 출력의 성질(시도 179): 복제로 기술 가능한가, 진짜 출현인가
     let (mut ap_total, mut ap_sc, mut ap_s, mut ap_novel) = (0usize, 0usize, 0usize, 0usize);
     let mut ap_tasks_copyable = 0usize;
@@ -140,6 +145,18 @@ fn main() {
             n_ambiguous_tasks += 1;
         }
 
+        // 원리상 덮을 수 없는 바뀐 객체(성질 동일·행동 상이가 같은 과제에 존재)
+        for (a, sa) in sites.iter().enumerate() {
+            if sa.delta.is_none() && sa.copies.is_empty() {
+                continue;
+            }
+            let blocked = sites.iter().enumerate().any(|(b, sb)| {
+                b != a && sb.props == sa.props && (sb.delta != sa.delta || sb.copies != sa.copies)
+            });
+            if blocked {
+                inprinciple_blocked += 1;
+            }
+        }
         let sel = select_obj_consistent(&lib, &train);
         // 바뀐 객체 중 일관 규칙이 하나도 발화하지 않는 것(경험/성질의 구멍)
         for site in sites.iter().filter(|s| s.delta.is_some()) {
@@ -210,6 +227,10 @@ fn main() {
     println!(
         "     └ 원인 분해: 정답 규칙 **부재** {}개(경험 구멍) · 있었으나 **필터에 걸림** {}개(성질 판별력)",
         no_rule_at_all, filtered_out
+    );
+    println!(
+        "     ★ **원리상 차단**(같은 과제에 성질 동일·행동 상이 객체 존재): {}개/{} — 라이브러리와 무관한 상한",
+        inprinciple_blocked, changed_objs
     );
 
     println!(
