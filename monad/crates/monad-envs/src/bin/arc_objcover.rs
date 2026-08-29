@@ -14,8 +14,8 @@
 use monad_core::abstraction::Library;
 use monad_envs::arc_data::load_dir;
 use monad_envs::arc_objrule::{
-    actual_deltas, apply_obj_rules, obj_rules_reproduce, rule_covers, select_obj_consistent,
-    task_props,
+    actual_deltas, apply_obj_rules, obj_rules_reproduce, raw_correct_rule_exists, rule_covers,
+    appearance_stats, describe_failure, select_obj_consistent, select_obj_cover, task_props, DescribeFail,
 };
 
 fn main() {
@@ -67,6 +67,17 @@ fn main() {
     let mut ambiguous_pairs = 0usize; // 성질 동일·행동 상이 객체쌍(성질로 원리상 구분 불가)
     let mut n_ambiguous_tasks = 0usize;
     let mut uncovered_changed = 0usize; // 바뀐 객체 중 어떤 일관 규칙도 발화하지 않음
+    let mut filtered_out = 0usize;   // 정답 규칙이 있었으나 일관성 필터에 걸림
+    let mut no_rule_at_all = 0usize; // 정답 행동 규칙이 애초에 없음
+    // 결정 목록 선택(시도 177)과의 나란한 비교
+    let (mut dl_nonempty, mut dl_reproduce, mut dl_test_ok) = (0usize, 0usize, 0usize);
+    // 결정 목록의 **한계 기여**: 단독 선택이 재현 못한 과제를 구해내는가
+    let (mut dl_rescue, mut dl_rescue_test) = (0usize, 0usize);
+    // ① 탈락 사유(시도 178): 상한이 왜 17인가
+    let (mut f_size, mut f_in, mut f_out, mut f_both) = (0usize, 0usize, 0usize, 0usize);
+    // 짝 없는 출력의 성질(시도 179): 복제로 기술 가능한가, 진짜 출현인가
+    let (mut ap_total, mut ap_sc, mut ap_s, mut ap_novel) = (0usize, 0usize, 0usize, 0usize);
+    let mut ap_tasks_copyable = 0usize;
 
     for task in &holdout {
         let train: Vec<_> = task
@@ -76,7 +87,37 @@ fn main() {
             .collect();
         let deltas: Option<Vec<_>> =
             train.iter().map(|(i, o)| actual_deltas(i, o)).collect();
-        let Some(deltas) = deltas else { continue };
+        let Some(deltas) = deltas else {
+            // 첫 실패 쌍의 사유를 집계한다(과제 단위 대표값)
+            if let Some(why) = train.iter().find_map(|(i, o)| describe_failure(i, o)) {
+                match why {
+                    DescribeFail::SizeMismatch => f_size += 1,
+                    DescribeFail::UnmatchedInput => f_in += 1,
+                    DescribeFail::UnmatchedOutput => f_out += 1,
+                    DescribeFail::Both => f_both += 1,
+                }
+                // 출현·복제 계열이면 그 성질을 센다
+                if matches!(why, DescribeFail::UnmatchedOutput | DescribeFail::Both) {
+                    let mut t = (0usize, 0usize, 0usize, 0usize);
+                    for (i, o) in &train {
+                        let a = appearance_stats(i, o);
+                        t.0 += a.unmatched_out;
+                        t.1 += a.same_shape_color;
+                        t.2 += a.same_shape_only;
+                        t.3 += a.novel;
+                    }
+                    ap_total += t.0;
+                    ap_sc += t.1;
+                    ap_s += t.2;
+                    ap_novel += t.3;
+                    // 모든 짝 없는 출력이 입력 원본을 가진 과제 = 복제만으로 기술 가능
+                    if t.0 > 0 && t.3 == 0 {
+                        ap_tasks_copyable += 1;
+                    }
+                }
+            }
+            continue;
+        };
         n_attemptable += 1;
         changed_objs += deltas
             .iter()
@@ -89,7 +130,7 @@ fn main() {
         let mut amb_here = 0usize;
         for a in 0..sites.len() {
             for b in a + 1..sites.len() {
-                if sites[a].0 == sites[b].0 && sites[a].1 != sites[b].1 {
+                if sites[a].props == sites[b].props && sites[a].delta != sites[b].delta {
                     amb_here += 1;
                 }
             }
@@ -101,10 +142,37 @@ fn main() {
 
         let sel = select_obj_consistent(&lib, &train);
         // 바뀐 객체 중 일관 규칙이 하나도 발화하지 않는 것(경험/성질의 구멍)
-        uncovered_changed += sites
-            .iter()
-            .filter(|(p, d)| d.is_some() && !sel.iter().any(|r| rule_covers(r, p)))
-            .count();
+        for site in sites.iter().filter(|s| s.delta.is_some()) {
+            if sel.iter().any(|r| rule_covers(r, &site.props)) {
+                continue;
+            }
+            uncovered_changed += 1;
+            // 필터 이전에는 정답 행동 규칙이 있었는가 — 두 원인을 가른다
+            if raw_correct_rule_exists(&lib, site) {
+                filtered_out += 1;
+            } else {
+                no_rule_at_all += 1;
+            }
+        }
+        // 결정 목록 선택 — 예외 우선 + 일반 후속(가림)을 허용
+        let solo_reproduces = obj_rules_reproduce(&sel, &train);
+        let dl = select_obj_cover(&lib, &train, 24);
+        if !dl.is_empty() {
+            dl_nonempty += 1;
+            if obj_rules_reproduce(&dl, &train) {
+                dl_reproduce += 1;
+                let dl_test = task.test.iter().all(|p| apply_obj_rules(&dl, &p.input) == p.output);
+                if dl_test {
+                    dl_test_ok += 1;
+                }
+                if !solo_reproduces {
+                    dl_rescue += 1;
+                    if dl_test {
+                        dl_rescue_test += 1;
+                    }
+                }
+            }
+        }
         if sel.is_empty() {
             continue;
         }
@@ -136,10 +204,35 @@ fn main() {
         ambiguous_pairs, n_ambiguous_tasks
     );
     println!(
-        "     일관 규칙 미발화 바뀐 객체 {}개/{} — 경험·성질의 구멍",
+        "     일관 규칙 미발화 바뀐 객체 {}개/{}",
         uncovered_changed, changed_objs
     );
+    println!(
+        "     └ 원인 분해: 정답 규칙 **부재** {}개(경험 구멍) · 있었으나 **필터에 걸림** {}개(성질 판별력)",
+        no_rule_at_all, filtered_out
+    );
 
+    println!(
+        "\n  🪜 결정 목록 선택(시도 177): 목록 존재 {}건 · 훈련 재현 {}건 · **시험까지 정확 {}건**",
+        dl_nonempty, dl_reproduce, dl_test_ok
+    );
+    println!(
+        "     └ 한계 기여(단독 선택이 재현 못한 것만): 구제 {}건 · 그중 시험 정확 {}건",
+        dl_rescue, dl_rescue_test
+    );
+    println!(
+        "
+  🧱 ① 상한의 정체 — 완전 기술 실패 사유: 크기 불일치 {}건 · 짝 없는 **입력** {}건(부분 변형) · 짝 없는 **출력** {}건(출현·복제) · 양쪽 {}건",
+        f_size, f_in, f_out, f_both
+    );
+    println!(
+        "     └ 짝 없는 출력 객체 {}개: 같은 모양·색 원본 있음 **{}개(복제)** · 같은 모양만 {}개 · 원본 없음 {}개(진짜 출현)",
+        ap_total, ap_sc, ap_s, ap_novel
+    );
+    println!(
+        "       → 진짜 출현이 하나도 없는(복제만으로 기술 가능한) 과제: **{}건**",
+        ap_tasks_copyable
+    );
     println!("\n▶ 판정:");
     if n_attemptable < 5 {
         println!("  **행동 어휘 병목** — 재색·삭제만으로 완전 기술되는 홀드아웃 과제가 {}건뿐.", n_attemptable);

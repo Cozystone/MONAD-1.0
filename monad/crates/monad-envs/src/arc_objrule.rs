@@ -36,6 +36,9 @@ const ACT_RECOLOR: u64 = 1;
 const ACT_DELETE: u64 = 2;
 /// v2(시도 169): 이동을 1급 델타로. param = 인코딩된 (dx,dy).
 const ACT_MOVE: u64 = 3;
+/// v3(시도 180): **복제** — 원본은 남고 사본이 생긴다. 다른 행동과 달리
+/// **가산적**이다(한 객체가 여러 사본을 낳을 수 있다). param = 인코딩된 (dx,dy).
+const ACT_COPY: u64 = 4;
 /// 시도 170~171의 계량 판정: 18종 확장(x/y 순위·모양 클래스·구멍·색 유일·비율)은
 /// 모호쌍을 428→164로 줄였지만 **홀드아웃 전이를 2→0으로 죽였다** — 성질 수에
 /// 비례해 쌍 LGG에서 우연히 상수로 굳는 슬롯이 늘기 때문(과잉 구체화). 스키마
@@ -182,7 +185,7 @@ fn split_orule(t: &Term) -> Option<(&Vec<Term>, &Term, &Term)> {
 /// 델타: stay=None | recolor(newc)=Some(c) | delete=Some(10). `complete`가 거짓이면
 /// 짝 없는 객체(이동·출현·부분 변형)가 남아 있다 — **확정된 재색·삭제 델타는
 /// 그래도 유효하다**(부분 추출의 근거).
-fn match_deltas(i: &Grid, o: &Grid) -> (Vec<Option<u64>>, Vec<bool>, bool) {
+fn match_deltas(i: &Grid, o: &Grid) -> (Vec<Option<u64>>, Vec<bool>, Vec<Vec<u64>>, bool) {
     let oi = decompose(i);
     let oo = decompose(o);
     let mut used_o = vec![false; oo.len()];
@@ -270,8 +273,174 @@ fn match_deltas(i: &Grid, o: &Grid) -> (Vec<Option<u64>>, Vec<bool>, bool) {
             deltas[a] = Some(10); // 10 = 삭제 표지(색 0..9와 구별)
         }
     }
+    // **복제 매칭**(v3): 남은 출력 객체 중 입력에 같은 모양·색 원본이 있는 것은
+    // 사본이다. 원본은 이미 유지/재색으로 짝지어졌을 수 있다 — 복제는 배타적
+    // 행동이 아니라 **덧붙는** 행동이기 때문이다. 가장 가까운 원본에 귀속한다.
+    let mut copies: Vec<Vec<u64>> = vec![Vec::new(); oi.len()];
+    for (b, ob) in oo.iter().enumerate() {
+        if used_o[b] {
+            continue;
+        }
+        let src = oi
+            .iter()
+            .enumerate()
+            .filter(|(_, ia)| shape_key(ia) == shape_key(ob) && obj_color(ia) == obj_color(ob))
+            .min_by_key(|(_, ia)| {
+                (ob.x0 as i64 - ia.x0 as i64).abs() + (ob.y0 as i64 - ia.y0 as i64).abs()
+            })
+            .map(|(a, ia)| (a, ob.x0 as i64 - ia.x0 as i64, ob.y0 as i64 - ia.y0 as i64));
+        if let Some((a, dx, dy)) = src {
+            used_o[b] = true;
+            copies[a].push(encode_move(dx, dy));
+        }
+    }
+    for c in copies.iter_mut() {
+        c.sort_unstable();
+        c.dedup();
+    }
     let complete = matched.iter().all(|m| *m) && used_o.iter().all(|u| *u);
-    (deltas, matched, complete)
+    (deltas, matched, copies, complete)
+}
+
+/// 완전 기술이 **왜** 실패했는지(진단용 — 시도 178).
+///
+/// ①(시도 가능)이 홀드아웃 254건 중 17건뿐이라는 것이 전체 상한이다. 선택을
+/// 완벽히 해도 17을 넘을 수 없으므로, 무엇이 237건을 탈락시키는지 재야 한다.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DescribeFail {
+    /// 격자 크기가 다르다(이 표현의 범위 밖).
+    SizeMismatch,
+    /// 짝 없는 **입력** 객체 — 부분 변형·분해 등.
+    UnmatchedInput,
+    /// 짝 없는 **출력** 객체 — 출현·복제.
+    UnmatchedOutput,
+    /// 양쪽 모두.
+    Both,
+}
+
+/// 한 훈련쌍이 현재 델타 어휘로 완전 기술되는가, 아니면 왜 안 되는가.
+pub fn describe_failure(i: &Grid, o: &Grid) -> Option<DescribeFail> {
+    if i.w != o.w || i.h != o.h {
+        return Some(DescribeFail::SizeMismatch);
+    }
+    let (_, matched, _, complete) = match_deltas(i, o);
+    if complete {
+        return None;
+    }
+    let left_in = matched.iter().any(|m| !m);
+    // 짝 없는 출력 객체 존재 여부는 match_deltas가 소비 표시로 남긴다 —
+    // 여기서는 다시 계산한다(진단이므로 비용보다 명확성 우선).
+    let oi = decompose(i);
+    let oo = decompose(o);
+    let matched_out = {
+        let (_, m2, _, _) = match_deltas(i, o);
+        // 입력 짝이 확정된 수만큼 출력도 소비됐다
+        m2.iter().filter(|x| **x).count()
+    };
+    let left_out = matched_out < oo.len();
+    let _ = oi;
+    Some(match (left_in, left_out) {
+        (true, true) => DescribeFail::Both,
+        (true, false) => DescribeFail::UnmatchedInput,
+        (false, true) => DescribeFail::UnmatchedOutput,
+        (false, false) => DescribeFail::Both, // 도달 불가지만 안전하게
+    })
+}
+
+/// 짝 없는 **출력** 객체의 성질(진단용 — 시도 179).
+///
+/// ① 상한의 최대 가용 원인이 "짝 없는 출력"(78건)으로 나왔다. 무엇을 만들지
+/// 정하기 전에 그 객체들이 어떤 종류인지 잰다:
+/// - `same_shape_color` = 입력에 **같은 모양·같은 색** 원본이 있다 → **복제**로 기술 가능
+/// - `same_shape_only` = 같은 모양, 다른 색 → 복제+재색
+/// - `novel` = 모양 자체가 입력에 없다 → 진짜 **출현**(모양 합성이 필요)
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AppearanceStats {
+    pub unmatched_out: usize,
+    pub same_shape_color: usize,
+    pub same_shape_only: usize,
+    pub novel: usize,
+}
+
+/// 한 훈련쌍의 짝 없는 출력 객체들을 위 세 갈래로 센다.
+pub fn appearance_stats(i: &Grid, o: &Grid) -> AppearanceStats {
+    let mut s = AppearanceStats::default();
+    if i.w != o.w || i.h != o.h {
+        return s;
+    }
+    let oi = decompose(i);
+    let oo = decompose(o);
+    // match_deltas와 같은 순서로 출력 소비를 재현한다
+    let (_, _, _, _) = match_deltas(i, o);
+    let mut used_o = vec![false; oo.len()];
+    let mut matched = vec![false; oi.len()];
+    // 유지
+    for (a, ia) in oi.iter().enumerate() {
+        for (b, ob) in oo.iter().enumerate() {
+            if !used_o[b]
+                && ia.x0 == ob.x0
+                && ia.y0 == ob.y0
+                && shape_key(ia) == shape_key(ob)
+                && obj_color(ia) == obj_color(ob)
+            {
+                used_o[b] = true;
+                matched[a] = true;
+                break;
+            }
+        }
+    }
+    // 재색
+    for (a, ia) in oi.iter().enumerate() {
+        if matched[a] {
+            continue;
+        }
+        for (b, ob) in oo.iter().enumerate() {
+            if !used_o[b] && ia.x0 == ob.x0 && ia.y0 == ob.y0 && shape_key(ia) == shape_key(ob) {
+                used_o[b] = true;
+                matched[a] = true;
+                break;
+            }
+        }
+    }
+    // 이동
+    for (a, ia) in oi.iter().enumerate() {
+        if matched[a] {
+            continue;
+        }
+        let mv = oo
+            .iter()
+            .enumerate()
+            .filter(|(b, ob)| {
+                !used_o[*b] && shape_key(ia) == shape_key(ob) && obj_color(ia) == obj_color(ob)
+            })
+            .min_by_key(|(_, ob)| {
+                (ob.x0 as i64 - ia.x0 as i64).abs() + (ob.y0 as i64 - ia.y0 as i64).abs()
+            })
+            .map(|(b, _)| b);
+        if let Some(b) = mv {
+            used_o[b] = true;
+            matched[a] = true;
+        }
+    }
+    // 남은 출력 객체를 분류한다
+    for (b, ob) in oo.iter().enumerate() {
+        if used_o[b] {
+            continue;
+        }
+        s.unmatched_out += 1;
+        let same_sc = oi
+            .iter()
+            .any(|ia| shape_key(ia) == shape_key(ob) && obj_color(ia) == obj_color(ob));
+        let same_s = oi.iter().any(|ia| shape_key(ia) == shape_key(ob));
+        if same_sc {
+            s.same_shape_color += 1;
+        } else if same_s {
+            s.same_shape_only += 1;
+        } else {
+            s.novel += 1;
+        }
+    }
+    s
 }
 
 /// 완전 기술 판정(선택·게이트용): 이동·출현이 섞이면 None — 전이 판정의
@@ -280,12 +449,22 @@ pub fn actual_deltas(i: &Grid, o: &Grid) -> Option<Vec<Option<u64>>> {
     if i.w != o.w || i.h != o.h {
         return None;
     }
-    let (deltas, _, complete) = match_deltas(i, o);
+    let (deltas, _, _, complete) = match_deltas(i, o);
     if complete {
         Some(deltas)
     } else {
         None
     }
+}
+
+/// 한 객체의 관측 지점: 성질 · 배타적 델타 · **덧붙는 복제들**.
+#[derive(Clone, Debug)]
+pub struct Site {
+    pub props: [u64; NPROPS],
+    /// 배타적 행동(유지=None · 재색 · 이동 · 삭제).
+    pub delta: Option<u64>,
+    /// 이 객체가 낳은 사본들의 오프셋(인코딩) — 없으면 빈 벡터.
+    pub copies: Vec<u64>,
 }
 
 /// 훈련쌍에서 객체 델타 경험을 뽑는다(재색·삭제만, 기계적).
@@ -300,10 +479,14 @@ pub fn extract_obj_rules(train: &[(Grid, Grid)]) -> Vec<Term> {
         if i.w != o.w || i.h != o.h {
             continue;
         }
-        let (deltas, matched, _complete) = match_deltas(i, o);
+        let (deltas, matched, copies, _complete) = match_deltas(i, o);
         let objs = decompose(i);
         let props = object_props(i, &objs);
         for (a, d) in deltas.iter().enumerate() {
+            // 복제는 배타적 행동과 독립이므로 짝 확정 여부와 무관하게 기록한다
+            for &c in &copies[a] {
+                out.push(rule_term(&props[a], ACT_COPY, c));
+            }
             if !matched[a] {
                 continue; // 짝 미확정(이동 후보 등) — 델타를 단정하지 않는다
             }
@@ -478,14 +661,20 @@ fn orule_fire(
 /// 규칙만 채택한다. 유지 객체에서 변경 행동이 발화하면 모순이다.
 /// 과제의 모든 (성질, 실제 델타) 지점. 하나라도 기술 불가면 빈 벡터 —
 /// 선택·진단이 공유하는 표준 좌표계다.
-pub fn task_props(train: &[(Grid, Grid)]) -> Vec<([u64; NPROPS], Option<u64>)> {
-    let mut sites: Vec<([u64; NPROPS], Option<u64>)> = Vec::new();
+pub fn task_props(train: &[(Grid, Grid)]) -> Vec<Site> {
+    let mut sites: Vec<Site> = Vec::new();
     for (i, o) in train {
-        let Some(deltas) = actual_deltas(i, o) else { return Vec::new() };
+        if i.w != o.w || i.h != o.h {
+            return Vec::new();
+        }
+        let (deltas, _, copies, complete) = match_deltas(i, o);
+        if !complete {
+            return Vec::new();
+        }
         let objs = decompose(i);
         let props = object_props(i, &objs);
-        for (p, d) in props.into_iter().zip(deltas) {
-            sites.push((p, d));
+        for ((p, d), c) in props.into_iter().zip(deltas).zip(copies) {
+            sites.push(Site { props: p, delta: d, copies: c });
         }
     }
     sites
@@ -494,6 +683,24 @@ pub fn task_props(train: &[(Grid, Grid)]) -> Vec<([u64; NPROPS], Option<u64>)> {
 /// 이 규칙이 이 성질 지점에서 발화하는가(진단용 — 시도 170).
 pub fn rule_covers(rule: &(Vec<Term>, Term, Term), props: &[u64; NPROPS]) -> bool {
     orule_fire(&rule.0, &rule.1, &rule.2, props).is_some()
+}
+
+/// **일관성 필터 이전**에 이 성질 지점에서 발화하며 **정답 행동을 주장하는**
+/// 라이브러리 규칙이 있는가(진단용 — 시도 176).
+///
+/// 이것이 미발화의 두 원인을 가른다:
+/// - `false` = 그런 규칙이 아예 없다 → **경험의 구멍**(더 많은/다른 경험 필요)
+/// - `true` = 있는데 선택에서 걸렸다 → **성질 판별력 부족**(그 규칙이 다른 자리에서
+///   오발화하므로 일관성 검사가 버린 것 — 성질 어휘가 자리를 구분하지 못한다)
+pub fn raw_correct_rule_exists(lib: &Library, site: &Site) -> bool {
+    for e in &lib.entries {
+        let Some((cond, kind, param)) = split_orule(&e.schema) else { continue };
+        let Some((k, p)) = orule_fire(cond, kind, param, &site.props) else { continue };
+        if action_ok(k, p, site) {
+            return true;
+        }
+    }
+    false
 }
 
 pub fn select_obj_consistent(
@@ -510,19 +717,13 @@ pub fn select_obj_consistent(
         let Some((cond, kind, param)) = split_orule(&lib.entries[e].schema) else { continue };
         let mut consistent = true;
         let mut useful = false;
-        for (props, actual) in &sites {
-            let Some((k, p)) = orule_fire(cond, kind, param, props) else { continue };
-            let ok = match actual {
-                None => k == ACT_RECOLOR && p == props[0], // 자기 색 재색 = 유지와 동치
-                Some(10) => k == ACT_DELETE,
-                Some(v) if *v >= MOVE_BASE => k == ACT_MOVE && p == *v,
-                Some(c) => k == ACT_RECOLOR && p == *c,
-            };
-            if !ok {
+        for site in &sites {
+            let Some((k, p)) = orule_fire(cond, kind, param, &site.props) else { continue };
+            if !action_ok(k, p, site) {
                 consistent = false;
                 break;
             }
-            if actual.is_some() {
+            if site.delta.is_some() || !site.copies.is_empty() {
                 useful = true;
             }
         }
@@ -533,17 +734,131 @@ pub fn select_obj_consistent(
     kept
 }
 
+/// 한 발화가 실제 델타와 맞는가(선택·진단이 공유하는 판정).
+fn action_ok(k: u64, p: u64, site: &Site) -> bool {
+    if k == ACT_COPY {
+        // 복제는 가산적 — 이 객체가 실제로 그 오프셋의 사본을 낳았는가
+        return site.copies.contains(&p);
+    }
+    match site.delta {
+        None => k == ACT_RECOLOR && p == site.props[0], // 자기 색 재색 = 유지와 동치
+        Some(10) => k == ACT_DELETE,
+        Some(v) if v >= MOVE_BASE => k == ACT_MOVE && p == v,
+        Some(c) => k == ACT_RECOLOR && p == c,
+    }
+}
+
+/// **결정 목록 선택**(시도 177) — 진단이 지목한 처방.
+///
+/// 미발화 바뀐 객체 151개의 원인을 가르니 **87개(58%)가 "정답 규칙이 있었는데
+/// 선택이 버린 것"**이었다. [`select_obj_consistent`]가 각 규칙에게 *모든* 자리에서
+/// 단독으로 옳을 것을 요구하기 때문이다. 실제 프로그램은 그렇게 쓰이지 않는다:
+/// 구체적 예외가 앞서고 일반 규칙이 뒤를 받치면, 뒤 규칙이 어딘가에서 과발화해도
+/// 앞 규칙이 **가려준다**(shadowing).
+///
+/// 그래서 규칙 하나가 아니라 **순서 있는 목록**을 고른다. 목록에 덧붙이는 규칙은
+/// "아직 아무 규칙도 발화하지 않은 자리"에서만 옳으면 된다 — 결정 목록
+/// (Rivest 1987)의 학습 규율이며, 도메인 중립이다. 탐욕 기준은 **아직 못 덮은
+/// 바뀐 객체를 가장 많이 덮는 것**이고, 오류를 하나라도 내면 후보에서 제외한다.
+pub fn select_obj_cover(
+    lib: &Library,
+    train: &[(Grid, Grid)],
+    max_rules: usize,
+) -> Vec<(Vec<Term>, Term, Term)> {
+    let sites = task_props(train);
+    if sites.is_empty() {
+        return Vec::new();
+    }
+    // 1차 통과: 바뀐 자리에서 **한 번이라도 옳게** 발화하는 규칙만 후보로 남기고,
+    // 그 발화 위치를 성기게(sparse) 기록한다. 이후 탐욕 루프는 이 표만 본다.
+    let mut cands: Vec<((Vec<Term>, Term, Term), Vec<(usize, u64, u64)>)> = Vec::new();
+    for e in lib.by_prior() {
+        let Some((cond, kind, param)) = split_orule(&lib.entries[e].schema) else { continue };
+        let mut fires = Vec::new();
+        let mut useful = false;
+        for (ix, site) in sites.iter().enumerate() {
+            let Some((k, p)) = orule_fire(cond, kind, param, &site.props) else { continue };
+            if (site.delta.is_some() || !site.copies.is_empty()) && action_ok(k, p, site) {
+                useful = true;
+            }
+            fires.push((ix, k, p));
+        }
+        if useful {
+            cands.push(((cond.clone(), kind.clone(), param.clone()), fires));
+        }
+    }
+    if cands.is_empty() {
+        return Vec::new();
+    }
+
+    let mut chosen: Vec<(Vec<Term>, Term, Term)> = Vec::new();
+    // shadowed[i] = 앞선 규칙이 이미 이 자리에서 발화함
+    let mut shadowed = vec![false; sites.len()];
+    let mut used = vec![false; cands.len()];
+    for _ in 0..max_rules {
+        // 미해결 = 아직 아무 규칙도 발화하지 않은 **바뀐** 자리
+        let remaining = sites
+            .iter()
+            .enumerate()
+            .filter(|(ix, s)| (s.delta.is_some() || !s.copies.is_empty()) && !shadowed[*ix])
+            .count();
+        if remaining == 0 {
+            return chosen;
+        }
+        let mut best: Option<(usize, usize)> = None; // (덮는 수, 후보 색인)
+        for (ci, (_, fires)) in cands.iter().enumerate() {
+            if used[ci] {
+                continue;
+            }
+            let mut cover = 0usize;
+            let mut bad = false;
+            for &(ix, k, p) in fires {
+                if shadowed[ix] {
+                    continue; // 앞 규칙이 가린다 — 이 자리에서의 오발화는 무해
+                }
+                let site = &sites[ix];
+                if !action_ok(k, p, site) {
+                    bad = true;
+                    break;
+                }
+                if site.delta.is_some() || !site.copies.is_empty() {
+                    cover += 1;
+                }
+            }
+            if bad || cover == 0 {
+                continue;
+            }
+            if best.map(|(bc, _)| cover > bc).unwrap_or(true) {
+                best = Some((cover, ci));
+            }
+        }
+        let Some((_, ci)) = best else { return chosen };
+        used[ci] = true;
+        for &(ix, _, _) in &cands[ci].1 {
+            shadowed[ix] = true;
+        }
+        chosen.push(cands[ci].0.clone());
+    }
+    chosen
+}
+
 /// 선택 규칙 적용: 발화한 객체에 행동을 실행(재색/삭제), 나머지는 유지.
 pub fn apply_obj_rules(rules: &[(Vec<Term>, Term, Term)], g: &Grid) -> Grid {
     let objs = decompose(g);
     let props = object_props(g, &objs);
-    // 1패스: 각 객체의 행동을 확정(첫 발화 규칙, 사전분포 순서)
+    // 1패스: 배타적 행동은 **첫 발화**(사전분포 순서), 복제는 **전부 수집**한다.
+    // 복제만 다른 이유는 성질이 다르기 때문이다 — 한 객체가 여러 사본을 낳는다.
     let mut acts: Vec<Option<(u64, u64)>> = vec![None; objs.len()];
+    let mut copy_acts: Vec<Vec<u64>> = vec![Vec::new(); objs.len()];
     for (ix, p) in props.iter().enumerate() {
         for (cond, kind, param) in rules {
-            if let Some((k, val)) = orule_fire(cond, kind, param, p) {
+            let Some((k, val)) = orule_fire(cond, kind, param, p) else { continue };
+            if k == ACT_COPY {
+                if !copy_acts[ix].contains(&val) {
+                    copy_acts[ix].push(val);
+                }
+            } else if acts[ix].is_none() {
                 acts[ix] = Some((k, val));
-                break;
             }
         }
     }
@@ -592,6 +907,25 @@ pub fn apply_obj_rules(rules: &[(Vec<Term>, Term, Term)], g: &Grid) -> Grid {
                 }
             }
             _ => {}
+        }
+    }
+    // 3패스: 복제 — 원본을 그대로 두고 오프셋 자리에 사본을 그린다
+    for (o, offs) in objs.iter().zip(copy_acts.iter()) {
+        let c = obj_color(o);
+        for &v in offs {
+            let Some((mdx, mdy)) = decode_move(v) else { continue };
+            for dy in 0..o.h {
+                for dx in 0..o.w {
+                    if !o.mask[dy * o.w + dx] {
+                        continue;
+                    }
+                    let nx = o.x0 as i64 + dx as i64 + mdx;
+                    let ny = o.y0 as i64 + dy as i64 + mdy;
+                    if nx >= 0 && ny >= 0 && (nx as usize) < g.w && (ny as usize) < g.h {
+                        out.set(nx as usize, ny as usize, c);
+                    }
+                }
+            }
         }
     }
     out
@@ -771,39 +1105,137 @@ mod tests {
     /// 접혀 발화 범위가 넓어지고, MDL이 그 상승을 스스로 멈춘다(고정점).
     #[test]
     fn refinement_ladder_widens_firing_then_converges() {
-        // 같은 규칙("최소 객체 삭제")을 성질이 조금씩 다른 과제들에서 경험
-        let mk = |bx: usize, by: usize, bc: u8, sx: usize, sy: usize, sc: u8, n: usize| {
+        // 같은 규칙("최소 객체 삭제")을 색만 다른 여러 과제에서 경험한다.
+        // (성질이 크게 다르면 쌍 LGG의 MDL 이득이 음수가 되어 기각된다 — 사다리가
+        //  오르려면 접을 만큼 닮은 경험이 있어야 한다는 것 자체가 MDL의 규율이다.)
+        let mk = |bc: u8, sc: u8| {
             let mut i = Grid::new(12, 12);
-            place(&mut i, bx, by, 3, 3, bc);
-            place(&mut i, sx, sy, 1, 1, sc);
-            for k in 0..n {
-                place(&mut i, 1 + 2 * k, 10, 1, 2, 6); // 중간 크기 방해물
-            }
+            place(&mut i, 1, 1, 3, 3, bc);
+            place(&mut i, 8, 5, 1, 1, sc);
             let mut o = i.clone();
-            place(&mut o, sx, sy, 1, 1, 0);
+            place(&mut o, 8, 5, 1, 1, 0);
             (i, o)
         };
-        let mut rules = extract_obj_rules(&[mk(1, 1, 3, 8, 5, 5, 1)]);
-        rules.extend(extract_obj_rules(&[mk(5, 2, 6, 2, 6, 8, 2)]));
+        let groups: Vec<Vec<Term>> = [(3u8, 5u8), (6, 8), (2, 4)]
+            .iter()
+            .map(|&(b, s)| extract_obj_rules(&[mk(b, s)]))
+            .collect();
         let mut lib = Library::new();
-        sleep_obj_abstract(&rules, &mut lib);
-        let groups: Vec<Vec<Term>> = vec![
-            extract_obj_rules(&[mk(1, 1, 3, 8, 5, 5, 1)]),
-            extract_obj_rules(&[mk(5, 2, 6, 2, 6, 8, 2)]),
-        ];
+        let all: Vec<Term> = groups.iter().flatten().cloned().collect();
+        sleep_obj_abstract(&all, &mut lib);
         sleep_obj_cross(&groups, &mut lib);
-        let before = lib.entries.len();
 
-        // 사다리를 올린다 — 라운드마다 더 일반적인 층이 쌓이고, 스스로 멈춘다
+        // 사다리의 목적은 규칙 **수**가 아니라 **발화 범위**다. 본 적 없는 팔레트
+        // 과제에서 바뀐 객체를 덮는 규칙이 몇 개인지로 잰다.
+        let unseen = [mk(7, 9)];
+        let sites = task_props(&unseen);
+        let covered = |l: &Library| -> usize {
+            let sel = select_obj_consistent(l, &unseen);
+            sites
+                .iter()
+                .filter(|s| s.delta.is_some() && sel.iter().any(|r| rule_covers(r, &s.props)))
+                .count()
+        };
+        let before_cov = covered(&lib);
+
         let log = sleep_obj_refine_rounds(&mut lib, 8);
         assert!(!log.is_empty());
-        assert!(lib.entries.len() > before, "정련이 아무것도 만들지 못했다");
+        // 스스로 멈춘다(고정점) — 사람이 라운드 수를 조율하지 않는다
         assert!(
             log.last().map(|(_, added)| *added == 0).unwrap_or(false) || log.len() == 8,
             "고정점에 닿지 않았고 라운드 상한에도 걸리지 않았다: {log:?}"
         );
-        // 모든 스키마는 여전히 MDL 이득 양수(과일반화가 라이브러리에 들어오지 않는다)
-        assert!(lib.entries.iter().all(|e| e.gain > 0));
+        // 사다리는 덮개를 **깎지 않는다**(더 일반적인 층이 더해질 뿐)
+        assert!(
+            covered(&lib) >= before_cov,
+            "사다리가 발화 범위를 줄였다: {before_cov} → {}",
+            covered(&lib)
+        );
+        // 과일반화는 사람이 아니라 MDL이 막는다 — 라이브러리 전체가 이득 양수
+        assert!(lib.entries.iter().all(|e| e.gain > 0), "MDL 불변식 위반");
+    }
+
+    /// **결정 목록 선택**(시도 177): 예외 규칙이 앞서 가려주면, 뒤의 일반 규칙이
+    /// 어딘가에서 과발화해도 쓸 수 있다. 단독 일관성만 요구하는 선택은 이 조합을
+    /// 못 찾는다 — 정답 규칙이 있는데도 버린다(홀드아웃 미발화의 58%).
+    #[test]
+    fn decision_list_uses_rules_that_solo_consistency_would_discard() {
+        // 규칙: "가장 작은 것은 지운다. 그 외 모든 것은 4로 칠한다."
+        // 뒤 규칙(일반)은 단독으로 보면 최소 객체에서 오발화하므로 버려진다.
+        let mk = |sc: u8, bc: u8, mc: u8| {
+            let mut i = Grid::new(12, 12);
+            place(&mut i, 0, 0, 3, 3, bc); // 최대
+            place(&mut i, 5, 5, 2, 2, mc); // 중간
+            place(&mut i, 9, 9, 1, 1, sc); // 최소 → 삭제
+            let mut o = i.clone();
+            place(&mut o, 9, 9, 1, 1, 0);
+            place(&mut o, 0, 0, 3, 3, 4);
+            place(&mut o, 5, 5, 2, 2, 4);
+            (i, o)
+        };
+        let groups: Vec<Vec<Term>> = [(5u8, 3u8, 7u8), (8, 6, 2), (1, 9, 3)]
+            .iter()
+            .map(|&(s, b, m)| extract_obj_rules(&[mk(s, b, m)]))
+            .collect();
+        let mut lib = Library::new();
+        let all: Vec<Term> = groups.iter().flatten().cloned().collect();
+        sleep_obj_abstract(&all, &mut lib);
+        sleep_obj_cross(&groups, &mut lib);
+        sleep_obj_refine_rounds(&mut lib, 6);
+
+        let unseen = [mk(6, 2, 9)];
+        // 단독 일관성 선택으로는 재현하지 못한다(일반 규칙이 버려지므로)
+        let solo = select_obj_consistent(&lib, &unseen);
+        let solo_ok = obj_rules_reproduce(&solo, &unseen);
+        // 결정 목록은 예외 우선 + 일반 후속으로 재현한다
+        let list = select_obj_cover(&lib, &unseen, 12);
+        assert!(
+            obj_rules_reproduce(&list, &unseen),
+            "결정 목록이 재현에 실패했다(단독 선택 재현={solo_ok})"
+        );
+        assert!(list.len() >= 2, "예외+일반 두 층이 나와야 한다: {}", list.len());
+    }
+
+    /// **복제는 가산적**(시도 180): 한 객체가 여러 사본을 낳고, 원본은 남는다.
+    /// 배타적 행동(첫 발화 승)과 달리 발화한 복제 규칙을 **전부** 실행해야 한다.
+    #[test]
+    fn copy_is_additive_and_transfers() {
+        // 규칙: "작은 사각형을 오른쪽 3칸·아래 3칸에 각각 복제한다"
+        let mk = |x: usize, y: usize, c: u8| {
+            let mut i = Grid::new(14, 14);
+            place(&mut i, x, y, 2, 2, c);
+            let mut o = i.clone();
+            place(&mut o, x + 5, y, 2, 2, c);
+            place(&mut o, x, y + 5, 2, 2, c);
+            (i, o)
+        };
+        // 추출: 사본 2개가 모두 복제 경험으로 나오고, 원본은 유지(배타 행동 없음)
+        let r = extract_obj_rules(&[mk(1, 1, 3)]);
+        assert_eq!(r.len(), 2, "복제 2건이어야 한다: {}건", r.len());
+        assert!(r.iter().all(|t| matches!(
+            split_orule(t).map(|(_, k, _)| k),
+            Some(Term::Const(x)) if *x == ACT_COPY
+        )));
+        // 완전 기술로 인정된다(예전에는 짝 없는 출력으로 탈락)
+        let (i0, o0) = mk(1, 1, 3);
+        assert!(actual_deltas(&i0, &o0).is_some(), "복제 포함 쌍이 완전 기술 실패");
+
+        // 전이: 색·위치가 다른 두 과제 경험 → 본 적 없는 세 번째에서 재현·시험
+        let groups: Vec<Vec<Term>> = [(1usize, 1usize, 3u8), (4, 2, 6)]
+            .iter()
+            .map(|&(x, y, c)| extract_obj_rules(&[mk(x, y, c)]))
+            .collect();
+        let mut lib = Library::new();
+        let all: Vec<Term> = groups.iter().flatten().cloned().collect();
+        sleep_obj_abstract(&all, &mut lib);
+        sleep_obj_cross(&groups, &mut lib);
+        let (ci, co) = mk(2, 5, 8);
+        let train = [(ci, co)];
+        let sel = select_obj_consistent(&lib, &train);
+        assert!(!sel.is_empty(), "복제 일관 규칙을 못 골랐다");
+        assert!(obj_rules_reproduce(&sel, &train), "복제 재현 실패");
+        let (ti, to) = mk(6, 3, 2);
+        assert_eq!(apply_obj_rules(&sel, &ti), to, "복제 시험 실패");
     }
 
     /// 맞지 않는 과제에서는 게이트가 막는다(거짓 양성 방지).

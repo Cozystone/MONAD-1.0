@@ -606,7 +606,12 @@ fn main() {
                 // **객체 델타 규칙 전이**(시도 166): 승자 표현 위의 성질 조건 규칙.
                 // 같은 오염 차단 규율 — 출처 과제 자신에게는 시도하지 않는다.
                 if ops.is_none() && !obj_sources.contains(&task.name) {
-                    let sel = monad_envs::arc_objrule::select_obj_consistent(&obj_lib, &train);
+                    let mut sel = monad_envs::arc_objrule::select_obj_consistent(&obj_lib, &train);
+                    // 단독 일관성으로 재현하지 못하면 **결정 목록**으로 다시 고른다
+                    // (예외 우선 + 일반 후속 — 진단이 지목한 미발화 58%의 처방)
+                    if !monad_envs::arc_objrule::obj_rules_reproduce(&sel, &train) {
+                        sel = monad_envs::arc_objrule::select_obj_cover(&obj_lib, &train, 24);
+                    }
                     if monad_envs::arc_objrule::obj_rules_reproduce(&sel, &train) {
                         obj_gate_pass += 1;
                         let all_ok = task.test.iter().all(|p| {
