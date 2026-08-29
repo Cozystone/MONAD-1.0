@@ -10,7 +10,8 @@
 use monad_core::abstraction::{Library, Provenance};
 use monad_envs::arc_data::load_dir;
 use monad_envs::arc_objrule::{
-    extract_obj_rules, sleep_obj_abstract, sleep_obj_cross, sleep_obj_refine_rounds,
+    extract_obj_rules, sleep_obj_abstract, sleep_obj_cross, sleep_obj_drop,
+    sleep_obj_refine_rounds, task_props, Site,
 };
 
 fn main() {
@@ -38,6 +39,8 @@ fn main() {
     let mut rules = Vec::new();
     let mut groups: Vec<Vec<monad_core::abstraction::Term>> = Vec::new();
     let mut sources: Vec<String> = Vec::new();
+    // 반례 집합(시도 182): 경험 과제의 모든 관측 지점 — 조건 탈락의 근거
+    let mut per_task: Vec<Vec<Site>> = Vec::new();
     for task in tasks.iter().take(take) {
         let train: Vec<_> = task
             .train
@@ -47,6 +50,10 @@ fn main() {
         let r = extract_obj_rules(&train);
         if !r.is_empty() {
             sources.push(task.name.clone());
+            let st = task_props(&train);
+            if !st.is_empty() {
+                per_task.push(st);
+            }
             rules.extend(r.iter().cloned());
             groups.push(r);
         }
@@ -76,6 +83,14 @@ fn main() {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(6);
+    // **반례 기반 조건 탈락**(시도 182): 경험 전체를 반례 집합으로 삼아 무관한
+    // 슬롯을 의도적으로 떨어뜨린다 — LGG(긍정 쌍만 봄)와 상보적이며, 판별력과
+    // 덮개를 동시에 얻는 유일한 경로.
+    let (tried_d, added_d) = sleep_obj_drop(&per_task, &mut lib);
+    println!(
+        "반례 기반 탈락(과제 내 판정): 씨앗 {tried_d}개 · 과제 {}개 → 새 규칙 {added_d}개",
+        per_task.len()
+    );
     let log = sleep_obj_refine_rounds(&mut lib, rounds);
     let total_added: usize = log.iter().map(|(_, a)| a).sum();
     println!(

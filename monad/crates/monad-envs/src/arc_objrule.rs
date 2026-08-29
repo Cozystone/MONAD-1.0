@@ -607,6 +607,122 @@ pub fn sleep_obj_cross(groups: &[Vec<Term>], lib: &mut Library) -> (usize, usize
 /// 다시 LGG를 돌리면, 세 과제 이상에 공통인 조건만 상수로 남는다. 어느 수준이
 /// 옳은지는 미리 정하지 않는다 — 여러 수준이 라이브러리에 공존하고, 과제의
 /// 증거(select)가 고른다. 채택은 여전히 MDL.
+/// **반례 기반 조건 탈락**(시도 182) — 이 표현의 근본 결함에 대한 처방.
+///
+/// # 왜 LGG로는 안 되는가 (세 번 측정된 법칙)
+///
+/// 성질을 늘리면 판별력은 오르고 덮개는 내린다. 세 실험이 같은 말을 했다:
+/// 18종(시도 170) ④ 2→0 · quadrant(181) 필터탈락 94→66이지만 규칙부재 53→67,
+/// ④ 2→1 · touch(181) 동일 양상. 총합은 늘 그대로다.
+///
+/// 원인은 **일반화 연산자**에 있다. 쌍 LGG는 두 경험이 **우연히 다른** 슬롯만
+/// 변수로 만든다 — "이 슬롯은 무관하다"를 알아낼 방법이 없다. 슬롯이 늘수록
+/// 우연한 불일치가 늘어 MDL 이득이 음수가 되고, 규칙이 통째로 기각된다.
+///
+/// # 이 연산자가 다른 점: **부정 증거를 쓴다**
+///
+/// 구체 경험 하나에서 출발해 슬롯을 하나씩 변수로 떨어뜨리되, **경험 전체에
+/// 반례가 없을 때만** 채택한다(그 규칙이 어떤 관측 자리에서도 틀린 행동을
+/// 주장하지 않을 때). 그러면 무관한 슬롯은 전부 떨어지고 **관련된 슬롯만
+/// 남는다** — 판별력과 덮개를 동시에 얻는 유일한 길이다.
+///
+/// 고전적으로는 특수→일반 방향의 version-space 탐색이며, LGG(일반→특수 방향의
+/// 최소 일반화)와 상보적이다. 둘 다 라이브러리에 공존하고 증거가 고른다.
+///
+/// # 반례는 **과제 안에서** 판정한다 (시도 183의 교정)
+///
+/// 79과제를 하나의 반례 집합으로 묶었더니 아무것도 떨어지지 않았다(규칙 387개
+/// 추가, 홀드아웃 지표 전부 불변). 당연하다 — "최소 객체를 지운다"는 규칙은
+/// 최소 객체를 지우지 *않는* 다른 78개 과제에서 전부 반례가 된다.
+///
+/// 규칙의 타당성은 **그것이 나온 에피소드 안에서** 성립한다. 과제 간 타당성은
+/// 선택 게이트가 새 과제의 증거로 판정한다. 그래서 반례 검사는 씨앗이 속한
+/// 과제의 지점들에 대해서만 한다.
+///
+/// `per_task`: 과제별 관측 지점 묶음.
+pub fn sleep_obj_drop(per_task: &[Vec<Site>], lib: &mut Library) -> (usize, usize) {
+    let (mut tried, mut added) = (0usize, 0usize);
+    for sites in per_task {
+    // 각 관측 지점의 행동을 씨앗으로 삼는다(유지는 제외 — 규칙으로 쓸 것이 없다)
+    for seed in sites {
+        let mut seeds: Vec<(u64, u64)> = Vec::new();
+        match seed.delta {
+            Some(10) => seeds.push((ACT_DELETE, 0)),
+            Some(v) if v >= MOVE_BASE => seeds.push((ACT_MOVE, v)),
+            Some(c) => seeds.push((ACT_RECOLOR, c)),
+            None => {}
+        }
+        for &c in &seed.copies {
+            seeds.push((ACT_COPY, c));
+        }
+        for (kind, param) in seeds {
+            tried += 1;
+            // 조건은 구체 성질에서 출발한다
+            let mut cond: Vec<Term> =
+                seed.props.iter().map(|&v| Term::Const(v)).collect();
+            // param이 어떤 슬롯 값과 같으면 **공유 변수**를 먼저 시도한다
+            // (팔레트 독립 규칙 — "다수색이 된다" 같은 형태)
+            let shared_slot = (0..NPROPS).find(|&j| seed.props[j] == param);
+            let mut out_term = Term::Const(param);
+            if let Some(j) = shared_slot {
+                let mut trial = cond.clone();
+                trial[j] = Term::Var(900);
+                if !has_counterexample(&trial, &Term::Const(kind), &Term::Var(900), sites) {
+                    cond = trial;
+                    out_term = Term::Var(900);
+                }
+            }
+            // 슬롯을 하나씩 떨어뜨린다 — 반례가 없을 때만
+            for j in 0..NPROPS {
+                if matches!(cond[j], Term::Var(_)) {
+                    continue;
+                }
+                let mut trial = cond.clone();
+                trial[j] = Term::Var(j as u32);
+                if !has_counterexample(&trial, &Term::Const(kind), &out_term, sites) {
+                    cond = trial;
+                }
+            }
+            let schema = Term::App(
+                F_ORULE,
+                vec![
+                    Term::App(F_OPROPS, cond),
+                    Term::App(F_OACT, vec![Term::Const(kind), out_term]),
+                ],
+            );
+            // MDL 회계를 위해 자기 자신을 사례로 갖는 추상으로 감싼다
+            let concrete = rule_term(&seed.props, kind, param);
+            if let Some(a) = generalize(&[schema.clone(), concrete.clone()]) {
+                // generalize는 둘의 LGG를 만든다 — 우리가 원하는 것은 schema 자체다.
+                // schema가 concrete를 포섭하면 그대로 넣는다.
+                if schema.matches(&concrete).is_some() {
+                    let abs = monad_core::abstraction::Abstraction {
+                        schema: schema.clone(),
+                        instances: vec![schema.matches(&concrete).unwrap()],
+                        gain: a.gain.max(1),
+                    };
+                    if lib.insert(&abs, Provenance::MonadDerived) {
+                        added += 1;
+                    }
+                }
+            }
+        }
+    }
+    }
+    (tried, added)
+}
+
+/// 이 규칙이 경험 어딘가에서 **틀린 행동을 주장**하는가(반례 검사).
+fn has_counterexample(cond: &[Term], kind: &Term, param: &Term, sites: &[Site]) -> bool {
+    for s in sites {
+        let Some((k, p)) = orule_fire(cond, kind, param, &s.props) else { continue };
+        if !action_ok(k, p, s) {
+            return true;
+        }
+    }
+    false
+}
+
 /// **일반화 사다리를 고정점까지 오른다**(시도 173).
 ///
 /// 진단이 지목한 병목은 ②(일관 규칙 존재 11건) → ③(훈련 재현 2건)이고, 원인은
@@ -1271,6 +1387,60 @@ mod tests {
         assert!(obj_rules_reproduce(&sel, &train), "복제 재현 실패");
         let (ti, to) = mk(6, 3, 2);
         assert_eq!(apply_obj_rules(&sel, &ti), to, "복제 시험 실패");
+    }
+
+    /// **반례 기반 탈락이 LGG가 못 만드는 규칙을 만든다**(시도 182).
+    ///
+    /// 무관한 슬롯이 우연히 **같은** 두 경험에서, LGG는 그 슬롯을 상수로 굳힌다
+    /// → 값이 다른 세 번째 과제에서 발화하지 않는다. 반례 검사는 "이 슬롯을
+    /// 떨어뜨려도 경험에 모순이 없다"를 확인하고 떨어뜨린다.
+    #[test]
+    fn counterexample_dropping_generalizes_where_lgg_cannot() {
+        // "최소 객체를 지운다" — 두 경험 모두 우연히 객체가 2개(슬롯 6 = 2)
+        let mk = |bc: u8, sc: u8| {
+            let mut i = Grid::new(10, 10);
+            place(&mut i, 1, 1, 3, 3, bc);
+            place(&mut i, 7, 7, 1, 1, sc);
+            let mut o = i.clone();
+            place(&mut o, 7, 7, 1, 1, 0);
+            (i, o)
+        };
+        let groups: Vec<Vec<Term>> = [(3u8, 5u8), (6, 8)]
+            .iter()
+            .map(|&(b, s)| extract_obj_rules(&[mk(b, s)]))
+            .collect();
+        let mut lgg_lib = Library::new();
+        let all: Vec<Term> = groups.iter().flatten().cloned().collect();
+        sleep_obj_abstract(&all, &mut lgg_lib);
+        sleep_obj_cross(&groups, &mut lgg_lib);
+        sleep_obj_refine_rounds(&mut lgg_lib, 6);
+
+        // 반례 기반 탈락 라이브러리
+        let per_task: Vec<Vec<Site>> = [(3u8, 5u8), (6, 8)]
+            .iter()
+            .map(|&(b, s)| task_props(&[mk(b, s)]))
+            .collect();
+        let mut drop_lib = Library::new();
+        let (tried, added) = sleep_obj_drop(&per_task, &mut drop_lib);
+        assert!(tried > 0 && added > 0, "탈락 일반화가 규칙을 못 만들었다");
+
+        // 시험 과제: 객체가 **3개**(경험에는 없던 값) — 최소 객체는 여전히 지워진다
+        let mut ti = Grid::new(12, 12);
+        place(&mut ti, 1, 1, 3, 3, 2);
+        place(&mut ti, 6, 1, 2, 2, 4);
+        place(&mut ti, 9, 9, 1, 1, 7);
+        let mut to = ti.clone();
+        place(&mut to, 9, 9, 1, 1, 0);
+        let train = [(ti, to)];
+
+        let lgg_sel = select_obj_consistent(&lgg_lib, &train);
+        let drop_sel = select_obj_consistent(&drop_lib, &train);
+        let lgg_ok = obj_rules_reproduce(&lgg_sel, &train);
+        let drop_ok = obj_rules_reproduce(&drop_sel, &train);
+        assert!(
+            drop_ok,
+            "반례 기반 탈락이 재현 실패(LGG={lgg_ok}) — 무관 슬롯을 못 떨어뜨렸다"
+        );
     }
 
     /// 맞지 않는 과제에서는 게이트가 막는다(거짓 양성 방지).
