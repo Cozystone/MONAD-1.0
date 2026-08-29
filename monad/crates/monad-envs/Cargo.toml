@@ -72,3 +72,7 @@ path = "src/bin/arc_objsleep.rs"
 [[bin]]
 name = "arc-objcover"
 path = "src/bin/arc_objcover.rs"
+
+[[bin]]
+name = "arc-propscan"
+path = "src/bin/arc_propscan.rs"

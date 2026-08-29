@@ -44,7 +44,18 @@ const ACT_COPY: u64 = 4;
 /// 비례해 쌍 LGG에서 우연히 상수로 굳는 슬롯이 늘기 때문(과잉 구체화). 스키마
 /// 정련 1라운드로도 회복 불가. **④를 실증한 12종을 유지**하고, 확장은 일반화
 /// 사다리가 여러 라운드로 강해진 뒤 재시도한다(측정으로 기각, 추측 아님).
-pub const NPROPS: usize = 12;
+pub const NPROPS: usize = 14;
+
+/// **성질 슬롯 12·13은 실험용 확장 자리**(시도 181). 계량이 정한 후보만 켠다:
+/// 모호쌍 분리율 quadrant 71.7% · touch_count 28.0% · nn_rank 23.6% ·
+/// 나머지 8종은 0~6%(넣으면 과잉 구체화만 부른다 — 시도 170에서 실측).
+///
+/// 켜지 않으면 상수 0이 채워져 항 크기가 같으므로, 같은 바이너리로 A/B가 된다.
+/// 환경변수 `MONAD_ARC_PROP_EXTRA` 값: `quadrant` · `touch` · `quadrant,touch`
+fn extra_slots() -> (bool, bool) {
+    let v = std::env::var("MONAD_ARC_PROP_EXTRA").unwrap_or_default();
+    (v.contains("quadrant"), v.contains("touch"))
+}
 
 /// 이동 벡터 인코딩(격자 ≤30이므로 ±30이면 충분). 델타 표기와 규칙 param 공용.
 const MOVE_BASE: u64 = 1000;
@@ -86,6 +97,7 @@ fn log2_bucket(v: usize) -> u64 {
 /// 한 격자의 객체 성질 벡터들(객체별 12칸). 전부 분해에서 기계적으로 나온다.
 pub fn object_props(g: &Grid, objs: &[Obj]) -> Vec<[u64; NPROPS]> {
     let n = objs.len();
+    let (use_quad, use_touch) = extra_slots();
     // 크기 순위
     let mut areas: Vec<usize> = objs.iter().map(|o| o.area).collect();
     areas.sort_unstable_by(|a, b| b.cmp(a));
@@ -148,6 +160,29 @@ pub fn object_props(g: &Grid, objs: &[Obj]) -> Vec<[u64; NPROPS]> {
                 largest_c,
                 smallest_c,
                 (twin as u64) * 3 + cfrank, // twin(0/1)×3 + 색빈도순위(0..2) — 한 칸 절약
+                // 슬롯 12: 사분면(격자 중심 대비) — 분리율 71.7%
+                if use_quad {
+                    let cx = (2 * o.x0 + o.w) as u64;
+                    let cy = (2 * o.y0 + o.h) as u64;
+                    ((cx > g.w as u64) as u64) * 2 + (cy > g.h as u64) as u64
+                } else {
+                    0
+                },
+                // 슬롯 13: 인접 객체 수(bbox 팽창 1칸, 0..4) — 분리율 28.0%
+                if use_touch {
+                    objs.iter()
+                        .filter(|p| !std::ptr::eq(*p, o))
+                        .filter(|p| {
+                            o.x0 <= p.x0 + p.w
+                                && p.x0 <= o.x0 + o.w
+                                && o.y0 <= p.y0 + p.h
+                                && p.y0 <= o.y0 + o.h
+                        })
+                        .count()
+                        .min(4) as u64
+                } else {
+                    0
+                },
             ]
         })
         .collect()
