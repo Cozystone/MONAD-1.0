@@ -92,6 +92,11 @@ fn build_targets(objs: &[Obj], props: &[[u64; NPROPS]], ix: usize) -> [Vec<[u64;
                 slot.push(props[j]);
             }
         }
+        // **정규화**(시도 201): 존재 양화는 상대의 **집합**만 보므로 순서는 의미가
+        // 없다. 정렬·중복 제거하지 않으면 같은 집합을 다른 순서로 가진 두 객체가
+        // "구별 가능"으로 잘못 집계되어 **천장이 부풀려진다**(원리상 차단 21의 신뢰성).
+        slot.sort_unstable();
+        slot.dedup();
     }
     out
 }
@@ -287,7 +292,17 @@ pub fn sleep_rel_drop(per_task: &[Vec<RSite>], lib: &mut Library) -> (usize, usi
                     // 등식을 맺을 상수가 남지 않는다 — 그런데 그 등식이야말로
                     // 속성 벡터가 담지 못하는 관계 정보다. 순서를 고르지 않고
                     // 두 가설을 다 남긴 뒤 **과제의 증거가 고르게 한다**.
-                    for equations_first in [false, true] {
+                    // 세 변형: ①탈락만 ②등식 우선 ③**self 통째 변수**(시도 200).
+                    //
+                    // 합집합 덮개 계량(74/212, GEN3 단독 9)이 드러낸 것: GEN3 규칙이
+                    // self 조건 14슬롯에 관계를 **덧붙인** 형태라 속성 규칙의 특수화가
+                    // 되어, 속성이 이미 통하는 자리에서만 발화한다. 관계만이 가를 수
+                    // 있는 101개(122−21)에 닿으려면 **관계가 판별을 떠맡아야** 하고,
+                    // 그러려면 self가 일반적이어야 한다. 슬롯 단위 탈락으로는 거기
+                    // 도달하기 어렵다(중간 단계마다 반례에 걸린다) — target을 통째로
+                    // 비운 "맨몸 존재"의 거울상을 명시적으로 시도한다.
+                    for variant in 0..3 {
+                        let equations_first = variant == 1;
                         tried += 1;
                         let mut sc: Vec<Term> =
                             seed.props.iter().map(|&v| Term::Const(v)).collect();
@@ -318,9 +333,19 @@ pub fn sleep_rel_drop(per_task: &[Vec<RSite>], lib: &mut Library) -> (usize, usi
                                 }
                             }
                         };
+                        if variant == 2 {
+                            // self를 통째로 자유 변수로: 관계와 target이 전부 판별한다
+                            let bare_self: Vec<Term> =
+                                (0..NPROPS).map(|j| Term::Var(j as u32)).collect();
+                            if !has_counterexample(
+                                &bare_self, r as u64, &tc, &Term::Const(kind), &out, sites,
+                            ) {
+                                sc = bare_self;
+                            }
+                        }
                         if equations_first {
                             equate(&mut sc, &mut tc);
-                        } else {
+                        } else if variant == 0 {
                             // **맨몸 존재**(시도 195): target을 통째로 자유 변수로
                             // 두면 규칙은 "그런 상대가 **있기만 하면**"이 된다
                             // ("바로 위에 뭔가 있는 객체를 지운다"). 관계 규칙에서

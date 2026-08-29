@@ -90,6 +90,10 @@ fn main() {
     .unwrap_or_default();
     let (mut rel_sel_nonempty, mut rel_reproduce, mut rel_blocked) = (0usize, 0usize, 0usize);
     let (mut rel_uncovered, mut rel_norule, mut rel_filtered) = (0usize, 0usize, 0usize);
+    // **합집합 덮개**(시도 200): 두 계층이 서로 다른 객체를 덮는지, 겹치는지.
+    // 지금까지 결합의 게이트 통과만 봤고 덮개 자체는 잰 적이 없다.
+    let (mut union_covered, mut gen2_only, mut gen3_only, mut both_cov) =
+        (0usize, 0usize, 0usize, 0usize);
     // 짝 없는 출력의 성질(시도 179): 복제로 기술 가능한가, 진짜 출현인가
     let (mut ap_total, mut ap_sc, mut ap_s, mut ap_novel) = (0usize, 0usize, 0usize, 0usize);
     let mut ap_tasks_copyable = 0usize;
@@ -198,6 +202,27 @@ fn main() {
                     rel_filtered += 1;
                 } else {
                     rel_norule += 1;
+                }
+            }
+            // 합집합 덮개: 같은 객체를 두 계층이 각각 덮는지 대조한다
+            {
+                let osel_now = select_obj_consistent(&lib, &train);
+                let osites = task_props(&train);
+                for (k, os) in osites.iter().enumerate() {
+                    if os.delta.is_none() {
+                        continue;
+                    }
+                    let c2 = osel_now.iter().any(|r| rule_covers(r, &os.props));
+                    let c3 = rs.get(k).map(|site| {
+                        rsel.iter()
+                            .any(|r| monad_envs::arc_relrule::rel_rule_covers(r, site))
+                    }).unwrap_or(false);
+                    match (c2, c3) {
+                        (true, true) => { both_cov += 1; union_covered += 1; }
+                        (true, false) => { gen2_only += 1; union_covered += 1; }
+                        (false, true) => { gen3_only += 1; union_covered += 1; }
+                        _ => {}
+                    }
                 }
             }
             if !rsel.is_empty() {
@@ -317,6 +342,11 @@ fn main() {
     println!(
         "     └ GEN3 미발화 바뀐 객체 {}개: 정답 규칙 **부재** {}개 · **필터 탈락** {}개",
         rel_uncovered, rel_norule, rel_filtered
+    );
+    println!(
+        "
+  🔶 **합집합 덮개**(시도 200): {}개/{} — GEN2 단독 {} · GEN3 단독 {} · 둘 다 {}",
+        union_covered, changed_objs, gen2_only, gen3_only, both_cov
     );
     println!("\n▶ 판정:");
     if n_attemptable < 5 {
