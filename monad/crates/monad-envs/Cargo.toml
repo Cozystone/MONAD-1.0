@@ -76,3 +76,7 @@ path = "src/bin/arc_objcover.rs"
 [[bin]]
 name = "arc-propscan"
 path = "src/bin/arc_propscan.rs"
+
+[[bin]]
+name = "arc-relscan"
+path = "src/bin/arc_relscan.rs"

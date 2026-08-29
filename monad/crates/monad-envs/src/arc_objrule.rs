@@ -57,6 +57,56 @@ fn extra_slots() -> (bool, bool) {
     (v.contains("quadrant"), v.contains("touch"))
 }
 
+/// **관계 슬롯**(시도 185) — 보존 법칙은 *절대* 성질로 측정됐다. 일차 관계
+/// 판별력 계량(arc-relscan)이 모호쌍의 **87.1%**를 관계가 가른다고 말했고,
+/// 상위는 전부 기하 관계였다(above 57.2% · adjacent 48.6% · left_of 45.1%).
+///
+/// 절대 위치(quadrant)는 과제마다 의미가 달라 덮개를 잃었다. 관계 위치는
+/// **배치 불변**이다 — "내 위에 최대 객체가 있다"는 격자가 달라도 성립한다.
+/// 그것이 보존 법칙을 깨는지 같은 A/B 하네스로 잰다.
+///
+/// 환경변수 MONAD_ARC_PROP_REL 값: above · adjacent · above,adjacent
+fn rel_slots() -> (bool, bool) {
+    let v = std::env::var("MONAD_ARC_PROP_REL").unwrap_or_default();
+    (v.contains("above"), v.contains("adjacent"))
+}
+
+/// 관계 상대 중 **가장 높은 역할**(0=최대·1=중간·2=최소·3=그런 상대 없음).
+/// 상대의 정체가 아니라 **역할**을 담는 것이 요점 — 그래야 배치를 넘어 전이된다.
+fn rel_rank(objs: &[Obj], me: usize, pick: impl Fn(&Obj, &Obj) -> bool) -> u64 {
+    let (max_a, min_a) = (
+        objs.iter().map(|o| o.area).max().unwrap_or(0),
+        objs.iter().map(|o| o.area).min().unwrap_or(0),
+    );
+    objs.iter()
+        .enumerate()
+        .filter(|(j, o)| *j != me && pick(&objs[me], o))
+        .map(|(_, o)| {
+            if o.area == max_a {
+                0u64
+            } else if o.area == min_a {
+                2
+            } else {
+                1
+            }
+        })
+        .min()
+        .unwrap_or(3)
+}
+
+/// 내 **위**에 완전히 있는가.
+fn is_above(me: &Obj, other: &Obj) -> bool {
+    other.y0 + other.h <= me.y0
+}
+
+/// 내게 **인접**한가(bbox 팽창 1칸).
+fn is_adjacent(me: &Obj, other: &Obj) -> bool {
+    me.x0 <= other.x0 + other.w
+        && other.x0 <= me.x0 + me.w
+        && me.y0 <= other.y0 + other.h
+        && other.y0 <= me.y0 + me.h
+}
+
 /// 이동 벡터 인코딩(격자 ≤30이므로 ±30이면 충분). 델타 표기와 규칙 param 공용.
 const MOVE_BASE: u64 = 1000;
 fn encode_move(dx: i64, dy: i64) -> u64 {
@@ -98,6 +148,7 @@ fn log2_bucket(v: usize) -> u64 {
 pub fn object_props(g: &Grid, objs: &[Obj]) -> Vec<[u64; NPROPS]> {
     let n = objs.len();
     let (use_quad, use_touch) = extra_slots();
+    let (use_above, use_adj) = rel_slots();
     // 크기 순위
     let mut areas: Vec<usize> = objs.iter().map(|o| o.area).collect();
     areas.sort_unstable_by(|a, b| b.cmp(a));
@@ -126,7 +177,8 @@ pub fn object_props(g: &Grid, objs: &[Obj]) -> Vec<[u64; NPROPS]> {
     let cmin = cfreq.iter().copied().filter(|&v| v > 0).min().unwrap_or(0);
 
     objs.iter()
-        .map(|o| {
+        .enumerate()
+        .map(|(idx, o)| {
             let c = obj_color(o);
             let rank = if o.area == max_a {
                 0
@@ -160,16 +212,22 @@ pub fn object_props(g: &Grid, objs: &[Obj]) -> Vec<[u64; NPROPS]> {
                 largest_c,
                 smallest_c,
                 (twin as u64) * 3 + cfrank, // twin(0/1)×3 + 색빈도순위(0..2) — 한 칸 절약
-                // 슬롯 12: 사분면(격자 중심 대비) — 분리율 71.7%
-                if use_quad {
+                // 슬롯 12: 관계가 켜져 있으면 관계값이 우선(시도 185)
+                if use_above {
+                    rel_rank(objs, idx, is_above)
+                } else if use_adj {
+                    rel_rank(objs, idx, is_adjacent)
+                } else if use_quad {
                     let cx = (2 * o.x0 + o.w) as u64;
                     let cy = (2 * o.y0 + o.h) as u64;
                     ((cx > g.w as u64) as u64) * 2 + (cy > g.h as u64) as u64
                 } else {
                     0
                 },
-                // 슬롯 13: 인접 객체 수(bbox 팽창 1칸, 0..4) — 분리율 28.0%
-                if use_touch {
+                // 슬롯 13: above와 adjacent를 함께 켜면 두 번째 관계가 여기 온다
+                if use_above && use_adj {
+                    rel_rank(objs, idx, is_adjacent)
+                } else if use_touch {
                     objs.iter()
                         .filter(|p| !std::ptr::eq(*p, o))
                         .filter(|p| {
