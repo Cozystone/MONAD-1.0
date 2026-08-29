@@ -657,48 +657,83 @@ pub fn sleep_obj_drop(per_task: &[Vec<Site>], lib: &mut Library) -> (usize, usiz
         }
         for (kind, param) in seeds {
             tried += 1;
-            // 조건은 구체 성질에서 출발한다
-            let mut cond: Vec<Term> =
-                seed.props.iter().map(|&v| Term::Const(v)).collect();
-            // param이 어떤 슬롯 값과 같으면 **공유 변수**를 먼저 시도한다
-            // (팔레트 독립 규칙 — "다수색이 된다" 같은 형태)
-            let shared_slot = (0..NPROPS).find(|&j| seed.props[j] == param);
-            let mut out_term = Term::Const(param);
-            if let Some(j) = shared_slot {
-                let mut trial = cond.clone();
-                trial[j] = Term::Var(900);
-                if !has_counterexample(&trial, &Term::Const(kind), &Term::Var(900), sites) {
-                    cond = trial;
-                    out_term = Term::Var(900);
+            // **두 일반화 순서를 모두 만든다**(시도 184 교정).
+            //
+            // 전역 성질(최대 객체의 색 등)은 과제 안에서 모든 객체에 같은 값이라
+            // 떨어뜨려도 과제 내 반례가 없다 → 항상 먼저 떨어지고, 그와 함께
+            // **과제 간 관계가 파괴된다**. 그러나 그 값이야말로 관계의 재료다.
+            //
+            // 순서를 고르는 대신 두 가설을 다 남긴다: ①떨어뜨리기만 한 것
+            // ②관계 등식을 먼저 묶고 나머지를 떨어뜨린 것. 여러 일반화 수준이
+            // 공존하고 **과제의 증거가 고른다** — 이 설계의 일관된 규율이다.
+            for equations_first in [false, true] {
+                let mut cond: Vec<Term> =
+                    seed.props.iter().map(|&v| Term::Const(v)).collect();
+                let mut out_term = Term::Const(param);
+                // param이 어떤 슬롯 값과 같으면 **공유 변수**를 먼저 시도한다
+                // (팔레트 독립 행동 — "다수색이 된다" 같은 형태)
+                if let Some(j) = (0..NPROPS).find(|&j| seed.props[j] == param) {
+                    let mut trial = cond.clone();
+                    trial[j] = Term::Var(900);
+                    if !has_counterexample(&trial, &Term::Const(kind), &Term::Var(900), sites) {
+                        cond = trial;
+                        out_term = Term::Var(900);
+                    }
                 }
-            }
-            // 슬롯을 하나씩 떨어뜨린다 — 반례가 없을 때만
-            for j in 0..NPROPS {
-                if matches!(cond[j], Term::Var(_)) {
-                    continue;
+                // 관계 등식: 값이 같은 두 상수 슬롯을 하나의 변수로 묶는다.
+                // 절대 조건과 달리 팔레트·배치 불변이라 덮개를 잃지 않고 판별한다.
+                let mut equate = |cond: &mut Vec<Term>| {
+                    let mut next_var = 800u32;
+                    for a in 0..NPROPS {
+                        for b in (a + 1)..NPROPS {
+                            if seed.props[a] != seed.props[b] {
+                                continue;
+                            }
+                            if !matches!(cond[a], Term::Const(_))
+                                || !matches!(cond[b], Term::Const(_))
+                            {
+                                continue;
+                            }
+                            let mut trial = cond.clone();
+                            trial[a] = Term::Var(next_var);
+                            trial[b] = Term::Var(next_var);
+                            if !has_counterexample(&trial, &Term::Const(kind), &out_term, sites) {
+                                *cond = trial;
+                                next_var += 1;
+                            }
+                        }
+                    }
+                };
+                if equations_first {
+                    equate(&mut cond);
                 }
-                let mut trial = cond.clone();
-                trial[j] = Term::Var(j as u32);
-                if !has_counterexample(&trial, &Term::Const(kind), &out_term, sites) {
-                    cond = trial;
+                // 무관한 슬롯을 떨어뜨린다 — 과제 내 반례가 없을 때만
+                for j in 0..NPROPS {
+                    if matches!(cond[j], Term::Var(_)) {
+                        continue;
+                    }
+                    let mut trial = cond.clone();
+                    trial[j] = Term::Var(j as u32);
+                    if !has_counterexample(&trial, &Term::Const(kind), &out_term, sites) {
+                        cond = trial;
+                    }
                 }
-            }
-            let schema = Term::App(
-                F_ORULE,
-                vec![
-                    Term::App(F_OPROPS, cond),
-                    Term::App(F_OACT, vec![Term::Const(kind), out_term]),
-                ],
-            );
-            // MDL 회계를 위해 자기 자신을 사례로 갖는 추상으로 감싼다
-            let concrete = rule_term(&seed.props, kind, param);
-            if let Some(a) = generalize(&[schema.clone(), concrete.clone()]) {
-                // generalize는 둘의 LGG를 만든다 — 우리가 원하는 것은 schema 자체다.
-                // schema가 concrete를 포섭하면 그대로 넣는다.
-                if schema.matches(&concrete).is_some() {
+                if !equations_first {
+                    equate(&mut cond);
+                }
+                let schema = Term::App(
+                    F_ORULE,
+                    vec![
+                        Term::App(F_OPROPS, cond),
+                        Term::App(F_OACT, vec![Term::Const(kind), out_term]),
+                    ],
+                );
+                let concrete = rule_term(&seed.props, kind, param);
+                let Some(bind) = schema.matches(&concrete) else { continue };
+                if let Some(a) = generalize(&[schema.clone(), concrete.clone()]) {
                     let abs = monad_core::abstraction::Abstraction {
-                        schema: schema.clone(),
-                        instances: vec![schema.matches(&concrete).unwrap()],
+                        schema,
+                        instances: vec![bind],
                         gain: a.gain.max(1),
                     };
                     if lib.insert(&abs, Provenance::MonadDerived) {
@@ -1441,6 +1476,66 @@ mod tests {
             drop_ok,
             "반례 기반 탈락이 재현 실패(LGG={lgg_ok}) — 무관 슬롯을 못 떨어뜨렸다"
         );
+    }
+
+    /// **관계 조건이 보존 법칙을 깬다**(시도 184).
+    ///
+    /// 절대 조건("내 색이 3")은 팔레트가 다른 과제에서 성립하지 않아, 구체화가
+    /// 곧 덮개 손실이었다(부재+필터 합이 네 번 보존). 관계 조건("내 색 == 최대
+    /// 객체의 색")은 팔레트 불변이라 **덮개를 잃지 않고 판별한다**.
+    ///
+    /// 이 시험은 그 차이를 직접 만든다: 규칙은 "최대 객체와 같은 색인 것을
+    /// 지운다"이고, 방해 객체는 그 색이 아니다. 팔레트가 완전히 다른 과제에서
+    /// 절대 조건 규칙은 발화하지 못하지만 관계 조건 규칙은 발화한다.
+    #[test]
+    fn relational_equation_transfers_where_absolute_condition_cannot() {
+        // big(3x3, 색 A) · twin(2x2, 색 A — 최대와 같은 색 → 삭제) · other(2x2, 색 B — 유지)
+        let mk = |a: u8, b: u8| {
+            let mut i = Grid::new(12, 12);
+            place(&mut i, 0, 0, 3, 3, a);
+            place(&mut i, 5, 0, 2, 2, a);
+            place(&mut i, 0, 6, 2, 2, b);
+            let mut o = i.clone();
+            place(&mut o, 5, 0, 2, 2, 0);
+            (i, o)
+        };
+        // 경험: 팔레트 (3,5)
+        let per_task: Vec<Vec<Site>> = vec![task_props(&[mk(3, 5)])];
+        assert!(!per_task[0].is_empty(), "경험 과제가 완전 기술되지 않았다");
+        let mut lib = Library::new();
+        let (tried, added) = sleep_obj_drop(&per_task, &mut lib);
+        assert!(tried > 0 && added > 0);
+        // 관계 조건(공유 변수)이 실제로 만들어졌는가
+        let has_shared = lib.entries.iter().any(|e| {
+            split_orule(&e.schema)
+                .map(|(cond, _, _)| {
+                    // 조건 안에서 **같은 변수가 두 자리에** 나타나면 관계 조건이다
+                    let mut vars: Vec<u32> = cond
+                        .iter()
+                        .filter_map(|t| match t {
+                            Term::Var(v) => Some(*v),
+                            _ => None,
+                        })
+                        .collect();
+                    let before = vars.len();
+                    vars.sort_unstable();
+                    vars.dedup();
+                    before > vars.len()
+                })
+                .unwrap_or(false)
+        });
+        assert!(has_shared, "슬롯 간 등식(관계 조건)이 만들어지지 않았다");
+
+        // 전이: 팔레트가 완전히 다른 과제 (7,2) — 절대 색 조건으로는 불가능
+        let train = [mk(7, 2)];
+        let sel = select_obj_consistent(&lib, &train);
+        assert!(!sel.is_empty(), "다른 팔레트에서 일관 규칙을 못 골랐다");
+        assert!(
+            obj_rules_reproduce(&sel, &train),
+            "관계 조건이 팔레트를 넘지 못했다"
+        );
+        let (ti, to) = mk(9, 1);
+        assert_eq!(apply_obj_rules(&sel, &ti), to, "시험 팔레트에서 실패");
     }
 
     /// 맞지 않는 과제에서는 게이트가 막는다(거짓 양성 방지).
