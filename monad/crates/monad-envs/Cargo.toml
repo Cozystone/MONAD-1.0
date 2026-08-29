@@ -80,3 +80,7 @@ path = "src/bin/arc_propscan.rs"
 [[bin]]
 name = "arc-relscan"
 path = "src/bin/arc_relscan.rs"
+
+[[bin]]
+name = "arc-relsleep"
+path = "src/bin/arc_relsleep.rs"

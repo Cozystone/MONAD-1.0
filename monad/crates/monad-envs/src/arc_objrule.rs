@@ -937,6 +937,17 @@ pub fn task_props(train: &[(Grid, Grid)]) -> Vec<Site> {
 ///
 /// 짝이 미확정인 객체는 델타를 모르므로 씨앗으로도 반례로도 쓰지 않는다 —
 /// 그것이 이 완화가 거짓 경험을 만들지 않는 이유다.
+/// 한 훈련쌍의 델타를 **객체 색인과 함께** 준다(관계 계층이 상대를 찾으려면
+/// 색인이 필요하다 — 성질 벡터로 되찾으면 성질이 같은 객체를 구별하지 못하고,
+/// 하필 그런 객체들이 관계 계층의 존재 이유다, 시도 192에서 실측).
+pub fn pair_deltas(i: &Grid, o: &Grid) -> Option<(Vec<Option<u64>>, Vec<bool>, Vec<Vec<u64>>)> {
+    if i.w != o.w || i.h != o.h {
+        return None;
+    }
+    let (d, m, c, _) = match_deltas(i, o);
+    Some((d, m, c))
+}
+
 pub fn task_props_partial(train: &[(Grid, Grid)]) -> Vec<Site> {
     let mut sites: Vec<Site> = Vec::new();
     for (i, o) in train {

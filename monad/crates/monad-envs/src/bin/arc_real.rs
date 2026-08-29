@@ -529,6 +529,21 @@ fn main() {
         // 계층 간 합성(시도 189): 부분 덮개 건수와 그중 마무리에 성공한 건수
         let mut obj_partial = 0usize;
         let mut obj_iter_gate = 0usize;
+        // GEN3 관계 규칙 계층(시도 192) — 존재 양화가 있는 세 번째 계층
+        let (mut rel_gate_pass, mut rel_solved) = (0usize, 0usize);
+        let rel_lib = monad_core::abstraction::Library::load(
+            std::env::var("MONAD_ARC_RELLIB").unwrap_or_else(|_| {
+                "C:\\0.ASKIM ALL-VIN\\31.Homage AI\\monad-rellib.tsv".into()
+            }),
+        )
+        .unwrap_or_default();
+        let rel_sources: Vec<String> = std::fs::read_to_string(
+            std::env::var("MONAD_ARC_RELSRC").unwrap_or_else(|_| {
+                "C:\\0.ASKIM ALL-VIN\\31.Homage AI\\monad-relsource.txt".into()
+            }),
+        )
+        .map(|t| t.lines().map(|s| s.trim().to_string()).collect())
+        .unwrap_or_default();
         let mut obj_layered = 0usize;
         let obj_lib = monad_core::abstraction::Library::load(
             std::env::var("MONAD_ARC_OBJLIB").unwrap_or_else(|_| {
@@ -607,6 +622,24 @@ fn main() {
                 // 재현하면, 그 규칙으로 시험을 푼다. 이것이 code-free 전이의 형태다.
                 // 기억은 가설일 뿐 — **이 과제의 증거로 검증해 모순 없는 규칙만**
                 // 채택한다(전량 적용은 남의 규칙이 오발화해 반드시 깨진다, 시도 158).
+                // **관계 규칙 전이**(GEN3, 시도 192): 존재 양화로 속성 벡터가
+                // 원리상 구분 못 하는 자리(홀드아웃의 58%)를 노린다.
+                if ops.is_none() && !rel_sources.contains(&task.name) {
+                    let sel = monad_envs::arc_relrule::select_rel_consistent(&rel_lib, &train);
+                    if monad_envs::arc_relrule::rel_rules_reproduce(&sel, &train) {
+                        rel_gate_pass += 1;
+                        let all_ok = task.test.iter().all(|p| {
+                            monad_envs::arc_relrule::apply_rel_rules(&sel, &p.input) == p.output
+                        });
+                        if all_ok {
+                            rel_solved += 1;
+                            reuse_solved += 1;
+                            solved += 1;
+                            solved_names.push(task.name.clone());
+                            continue;
+                        }
+                    }
+                }
                 // **객체 델타 규칙 전이**(시도 166): 승자 표현 위의 성질 조건 규칙.
                 // 같은 오염 차단 규율 — 출처 과제 자신에게는 시도하지 않는다.
                 if ops.is_none() && !obj_sources.contains(&task.name) {
@@ -845,6 +878,12 @@ fn main() {
         println!(
             "     └ 계층 간 합성: 잔차 감소 {}건 → 동결 계층 마무리 **{}건** · 반복 적용(깊이>1) 통과 {}건",
             obj_partial, obj_layered, obj_iter_gate
+        );
+        println!(
+            "  관계 규칙 전이(GEN3): 규칙 {}개 · 훈련 재현 통과 {}건 → **해결 {}건** (존재 양화)",
+            rel_lib.entries.len(),
+            rel_gate_pass,
+            rel_solved
         );
         println!(
             "  패치 규칙 전이: 규칙 {}개 · 증거선택 누적 {}개 · 훈련 재현 통과 {}건 → **해결 {}건** \

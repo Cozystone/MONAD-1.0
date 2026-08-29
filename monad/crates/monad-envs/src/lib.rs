@@ -10,6 +10,7 @@ pub mod arc_ebm;
 pub mod arc_experience;
 pub mod arc_objrule;
 pub mod arc_patch;
+pub mod arc_relrule;
 pub mod arc_solve;
 pub mod bounce;
 pub mod grid;
