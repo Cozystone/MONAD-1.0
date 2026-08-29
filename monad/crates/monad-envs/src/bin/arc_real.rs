@@ -76,6 +76,14 @@ fn main() {
     // 세션 내내 관찰한 일반성↔판별력 교환을 **실패 지점에서 직접** 재는 것은
     // 이번이 처음이다. 과제 내용은 출력하지 않는다(봉인 규율).
     let (mut of_silent, mut of_misfire) = (0usize, 0usize);
+    // 오발화를 **셀 단위로 분해**(시도 210). "발화해서 틀렸다"는 아직 두 가지를
+    // 뭉뚱그린다:
+    //   damaged      맞았던 셀을 틀리게 만들었다 → 과발화/틀린 행동(판별력 부족)
+    //   남은 오답     틀린 셀을 못 고쳤다        → 덮개 부족(일반성 부족)
+    // 둘의 비가 다음 개입의 방향을 정한다. 시험 출력은 **집계에만** 쓰고 선택에
+    // 되먹이지 않는다(각성은 이미 채점에 같은 값을 쓴다).
+    let (mut of_corrected, mut of_damaged, mut of_before_wrong, mut of_after_wrong) =
+        (0usize, 0usize, 0usize, 0usize);
     // 선택 계층(시도 206): 게이트가 쌍당 결정 하나 — 덮개 요구가 없다
     let (mut sel_gate_pass, mut sel_solved) = (0usize, 0usize);
     let sel_lib = monad_core::abstraction::Library::load(
@@ -766,11 +774,21 @@ fn main() {
                             continue;
                         }
                         for p in &task.test {
-                            if monad_envs::arc_relrule::apply_rel_rules(&sel, &p.input) == p.input {
+                            let pred = monad_envs::arc_relrule::apply_rel_rules(&sel, &p.input);
+                            if pred == p.input {
                                 of_silent += 1;
                             } else {
                                 of_misfire += 1;
                             }
+                            let prof = monad_envs::arc_experience::effect_profile(
+                                std::slice::from_ref(&(p.input.clone(), p.output.clone())),
+                                std::slice::from_ref(&p.input),
+                                std::slice::from_ref(&pred),
+                            );
+                            of_corrected += prof.corrected;
+                            of_damaged += prof.damaged;
+                            of_before_wrong += prof.before_wrong;
+                            of_after_wrong += prof.after_wrong;
                         }
                     }
                 }
@@ -797,13 +815,23 @@ fn main() {
                                 continue;
                             }
                             for p in &task.test {
-                                if monad_envs::arc_relrule::apply_combined(&osel, &rsel, &p.input)
-                                    == p.input
-                                {
+                                let pred = monad_envs::arc_relrule::apply_combined(
+                                    &osel, &rsel, &p.input,
+                                );
+                                if pred == p.input {
                                     of_silent += 1;
                                 } else {
                                     of_misfire += 1;
                                 }
+                                let prof = monad_envs::arc_experience::effect_profile(
+                                    std::slice::from_ref(&(p.input.clone(), p.output.clone())),
+                                    std::slice::from_ref(&p.input),
+                                    std::slice::from_ref(&pred),
+                                );
+                                of_corrected += prof.corrected;
+                                of_damaged += prof.damaged;
+                                of_before_wrong += prof.before_wrong;
+                                of_after_wrong += prof.after_wrong;
                             }
                         }
                     }
@@ -849,6 +877,15 @@ fn main() {
                             } else {
                                 of_misfire += 1;
                             }
+                            let prof = monad_envs::arc_experience::effect_profile(
+                                std::slice::from_ref(&(p.input.clone(), p.output.clone())),
+                                std::slice::from_ref(&p.input),
+                                std::slice::from_ref(&pred),
+                            );
+                            of_corrected += prof.corrected;
+                            of_damaged += prof.damaged;
+                            of_before_wrong += prof.before_wrong;
+                            of_after_wrong += prof.after_wrong;
                         }
                     } else {
                         // 합성 경로는 **부분 기술 과제에도** 적용한다(시도 190):
@@ -1114,12 +1151,19 @@ fn main() {
             of_silent, of_misfire
         );
         if of_silent + of_misfire > 0 {
+            // 셀 단위 분해: 오발화 안에서 **과발화(damaged)**와 **미수정(남은 오답)**
+            // 을 가른다. 앞이 크면 판별력, 뒤가 크면 덮개가 다음 개입의 축이다.
+            let unfixed = of_after_wrong.saturating_sub(of_damaged);
+            println!(
+                "    셀 분해: 고침 {} · **망침 {}** · 미수정 {} (적용 전 오답 {} → 적용 후 {})",
+                of_corrected, of_damaged, unfixed, of_before_wrong, of_after_wrong
+            );
             println!(
                 "    → {}",
-                if of_silent > of_misfire {
-                    "덮개 부족이 주원인 — 더 일반적인 규칙이 필요하다"
+                if of_damaged > unfixed {
+                    "과발화가 우세 — 규칙이 건드리면 안 될 곳을 건드린다(판별력)"
                 } else {
-                    "판별력 부족이 주원인 — 더 구체적인 규칙이 필요하다"
+                    "미수정이 우세 — 규칙이 닿지 못한 곳이 더 많다(덮개)"
                 }
             );
         }
