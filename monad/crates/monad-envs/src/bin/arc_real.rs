@@ -63,6 +63,19 @@ fn main() {
     // 적어 두면 결과가 자기설명적이 되고, 과제마다 "이 과제가 라이브러리에 몇 개를
     // 기여했고 그 전부가 배제된 채 풀렸는가"를 바로 보일 수 있다.
     let mut monad_names: Vec<String> = Vec::new();
+    // **과적합 현장 계량**(시도 209). 시도 208이 남긴 가장 값진 숫자는
+    // "게이트 통과 5건 → 시험 해결 1건"이다. 즉 네 번은 훈련쌍을 정확히
+    // 재현하고도 시험에서 틀렸다. 그 네 번이 **왜** 틀렸는지는 처방이 정반대인
+    // 두 가지로 갈린다:
+    //
+    //   침묵  — 고른 규칙이 시험 입력에서 아무것도 안 한다(예측=입력).
+    //           덮개가 모자란다 → 더 **일반적인** 규칙이 필요하다.
+    //   오발화 — 규칙이 발화했는데 틀린 답을 냈다.
+    //           판별력이 모자란다 → 더 **구체적인** 규칙이 필요하다.
+    //
+    // 세션 내내 관찰한 일반성↔판별력 교환을 **실패 지점에서 직접** 재는 것은
+    // 이번이 처음이다. 과제 내용은 출력하지 않는다(봉인 규율).
+    let (mut of_silent, mut of_misfire) = (0usize, 0usize);
     // 선택 계층(시도 206): 게이트가 쌍당 결정 하나 — 덮개 요구가 없다
     let (mut sel_gate_pass, mut sel_solved) = (0usize, 0usize);
     let sel_lib = monad_core::abstraction::Library::load(
@@ -189,6 +202,9 @@ fn main() {
                         solved_names.push(task.name.clone());
                         continue;
                     }
+                    // 답 색 계층은 항상 무언가를 내놓으므로(슬롯의 색으로 채운다)
+                    // 침묵이 없다 — 실패는 전부 오발화다.
+                    of_misfire += task.test.len();
                 }
             }
             // **선택 규칙 전이**(시도 206): 크기 변환 과제 중 "출력 = 입력 어느
@@ -749,6 +765,13 @@ fn main() {
                             solved_names.push(task.name.clone());
                             continue;
                         }
+                        for p in &task.test {
+                            if monad_envs::arc_relrule::apply_rel_rules(&sel, &p.input) == p.input {
+                                of_silent += 1;
+                            } else {
+                                of_misfire += 1;
+                            }
+                        }
                     }
                 }
                 // **두 계층 결합 전이**(시도 196): GEN2(속성)와 GEN3(관계)는
@@ -772,6 +795,15 @@ fn main() {
                                 solved += 1;
                                 solved_names.push(task.name.clone());
                                 continue;
+                            }
+                            for p in &task.test {
+                                if monad_envs::arc_relrule::apply_combined(&osel, &rsel, &p.input)
+                                    == p.input
+                                {
+                                    of_silent += 1;
+                                } else {
+                                    of_misfire += 1;
+                                }
                             }
                         }
                     }
@@ -806,6 +838,17 @@ fn main() {
                             solved += 1;
                             solved_names.push(task.name.clone());
                             continue;
+                        }
+                        // 게이트는 통과했는데 시험에서 틀렸다 — 과적합의 현장.
+                        for p in &task.test {
+                            let pred = monad_envs::arc_objrule::apply_obj_rules_iter(
+                                &sel, &p.input, d,
+                            );
+                            if pred == p.input {
+                                of_silent += 1;
+                            } else {
+                                of_misfire += 1;
+                            }
                         }
                     } else {
                         // 합성 경로는 **부분 기술 과제에도** 적용한다(시도 190):
@@ -1063,6 +1106,23 @@ fn main() {
         // **자기설명적 출처 분리**: MONAD가 푼 과제마다, 그 과제가 라이브러리에
         // 몇 개를 기여했는지 적는다. 기여분은 전부 배제된 채로 풀린 것이므로
         // 이 숫자가 클수록 "자기 것으로 자기를 푼 게 아니다"가 강하게 성립한다.
+        // **과적합 현장**(시도 209): 게이트를 통과하고도 시험에서 틀린 시험쌍을
+        // 침묵/오발화로 가른다. 두 처방이 정반대이므로 이 비율이 다음 개입의
+        // 방향을 정한다 — 침묵이 많으면 일반성, 오발화가 많으면 판별력.
+        println!(
+            "\n  과적합 현장(게이트 통과 후 시험 실패): 침묵 {}건 · 오발화 {}건",
+            of_silent, of_misfire
+        );
+        if of_silent + of_misfire > 0 {
+            println!(
+                "    → {}",
+                if of_silent > of_misfire {
+                    "덮개 부족이 주원인 — 더 일반적인 규칙이 필요하다"
+                } else {
+                    "판별력 부족이 주원인 — 더 구체적인 규칙이 필요하다"
+                }
+            );
+        }
         if !monad_names.is_empty() {
             println!("\n  MONAD_DERIVED 해결 과제(각각 자기 기여분은 배제됨):");
             for n in &monad_names {
