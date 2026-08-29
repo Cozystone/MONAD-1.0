@@ -73,6 +73,24 @@ fn main() {
     )
     .map(|t| t.lines().map(|s| s.trim().to_string()).collect())
     .unwrap_or_default();
+    // 답 색 계층(시도 207): 출처 앞 200과제에서 배우고 그 밖에 적용한다.
+    // 게이트는 쌍당 결정 하나이고, 규칙이 "슬롯 j"라 구성상 팔레트 독립이다.
+    let mut ans_lib = monad_core::abstraction::Library::new();
+    let mut ans_sources: Vec<String> = Vec::new();
+    {
+        let mut per_task = Vec::new();
+        for task in tasks.iter().take(200) {
+            let tr: Vec<_> =
+                task.train.iter().map(|p| (p.input.clone(), p.output.clone())).collect();
+            let r = monad_envs::arc_answer::learn_ans_rules(&tr);
+            if !r.is_empty() {
+                ans_sources.push(task.name.clone());
+                per_task.push(r);
+            }
+        }
+        monad_envs::arc_answer::sleep_ans(&per_task, &mut ans_lib);
+    }
+    let (mut ans_gate_pass, mut ans_solved) = (0usize, 0usize);
     let t1 = std::time::Instant::now();
     let mut max_task_ms = 0f32;
     for task in &tasks {
@@ -141,6 +159,24 @@ fn main() {
                     solved += 1;
                     solved_names.push(task.name.clone());
                     continue;
+                }
+            }
+            // **답 색 규칙 전이**(시도 207): 출력이 단색인 부류.
+            if !ans_sources.contains(&task.name) {
+                let asel = monad_envs::arc_answer::select_ans_consistent(&ans_lib, &train);
+                if !asel.is_empty() {
+                    ans_gate_pass += 1;
+                    let (slot, dims) = asel[0];
+                    let all_ok = task.test.iter().all(|p| {
+                        monad_envs::arc_answer::apply_ans_rule(slot, dims, &p.input).as_ref()
+                            == Some(&p.output)
+                    });
+                    if all_ok {
+                        ans_solved += 1;
+                        solved += 1;
+                        solved_names.push(task.name.clone());
+                        continue;
+                    }
                 }
             }
             // **선택 규칙 전이**(시도 206): 크기 변환 과제 중 "출력 = 입력 어느
@@ -951,6 +987,10 @@ fn main() {
         println!(
             "  두 계층 결합(시도 196): 훈련 재현 통과 {}건 → **해결 {}건** (속성 ∪ 관계)",
             comb_gate_pass, comb_solved
+        );
+        println!(
+            "  답 색 규칙 전이(시도 207): 규칙 {}개 · 출처 {}과제 · 훈련 재현 {}건 → **해결 {}건** (어느 색이 답인가)",
+            ans_lib.entries.len(), ans_sources.len(), ans_gate_pass, ans_solved
         );
         println!(
             "  선택 규칙 전이(시도 206): 규칙 {}개 · 훈련 재현 통과 {}건 → **해결 {}건** (무엇이 답인가)",

@@ -82,6 +82,12 @@ fn main() {
     let mut selection_task = 0usize;
     let mut selection_pairs = 0usize;
     let mut selection_total = 0usize;
+    // **단색 출력**(시도 207): 출력이 한 색으로 채워진 과제 = "어느 색이 답인가".
+    // 고정 크기 출력 40건을 "합성된 내용"으로 뭉뚱그렸지만, 그 안에 성질 기계로
+    // 바로 다룰 수 있는 부류가 있는지는 재지 않았다.
+    let mut mono_task = 0usize;
+    let (mut mono_major, mut mono_rare, mut mono_largest, mut mono_smallest, mut mono_other) =
+        (0usize, 0usize, 0usize, 0usize, 0usize);
 
     for task in tasks.iter().filter(|t| !solved.contains(&t.name)) {
         let pairs: Vec<(Grid, Grid)> = task
@@ -117,6 +123,56 @@ fn main() {
         }
         if sel_ok == pairs.len() {
             selection_task += 1;
+        }
+
+        // 출력이 전부 단색인가, 그 색이 입력의 어느 성질로 결정되는가
+        let all_mono = pairs.iter().all(|(_, o)| {
+            let f = o.cells.first().copied().unwrap_or(0);
+            o.cells.iter().all(|&c| c == f)
+        });
+        if all_mono {
+            mono_task += 1;
+            let (mut major_ok, mut rare_ok, mut largest_ok, mut smallest_ok) =
+                (true, true, true, true);
+            for (i, o) in &pairs {
+                let ans = o.cells.first().copied().unwrap_or(0);
+                let mut freq = [0usize; 10];
+                for &c in &i.cells {
+                    if c != 0 && c <= 9 {
+                        freq[c as usize] += 1;
+                    }
+                }
+                let major =
+                    (1..10).filter(|&c| freq[c] > 0).max_by_key(|&c| freq[c]).unwrap_or(0) as u8;
+                let rare =
+                    (1..10).filter(|&c| freq[c] > 0).min_by_key(|&c| freq[c]).unwrap_or(0) as u8;
+                let objs = components_bg(i, false, 0);
+                let col = |b: &monad_envs::grid::Obj| -> u8 {
+                    b.mask
+                        .iter()
+                        .zip(b.colors.iter())
+                        .find(|(m, _)| **m)
+                        .map(|(_, &c)| c)
+                        .unwrap_or(0)
+                };
+                let lg = objs.iter().max_by_key(|b| b.area).map(col).unwrap_or(0);
+                let sm = objs.iter().min_by_key(|b| b.area).map(col).unwrap_or(0);
+                major_ok &= ans == major;
+                rare_ok &= ans == rare;
+                largest_ok &= ans == lg;
+                smallest_ok &= ans == sm;
+            }
+            if major_ok {
+                mono_major += 1;
+            } else if rare_ok {
+                mono_rare += 1;
+            } else if largest_ok {
+                mono_largest += 1;
+            } else if smallest_ok {
+                mono_smallest += 1;
+            } else {
+                mono_other += 1;
+            }
         }
 
         let kinds: Vec<&str> = pairs.iter().map(|(i, o)| classify_pair(i, o)).collect();
@@ -176,6 +232,10 @@ fn main() {
         selection_total
     );
     println!("     → 성립하면 \"무엇이 답인가\"를 고르는 문제이고, 성질 규칙 기계를 선택에 재사용할 수 있다.");
+    println!(
+        "\n  ★ **단색 출력**(답이 \"어느 색인가\"): {}건 ({:.0}%) — 다수색 {} · 희소색 {} · 최대객체색 {} · 최소객체색 {} · 기타 {}",
+        mono_task, pct(mono_task), mono_major, mono_rare, mono_largest, mono_smallest, mono_other
+    );
     println!("\n▶ 배수·약수·추출이 대부분이면 작은 학습 어휘로 열린다.");
     println!("  기타가 대부분이면 이 슬라이스도 이 표현족 밖이다.");
 }
