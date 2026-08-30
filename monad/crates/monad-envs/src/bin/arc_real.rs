@@ -82,6 +82,7 @@ fn main() {
     //   남은 오답     틀린 셀을 못 고쳤다        → 덮개 부족(일반성 부족)
     // 둘의 비가 다음 개입의 방향을 정한다. 시험 출력은 **집계에만** 쓰고 선택에
     // 되먹이지 않는다(각성은 이미 채점에 같은 값을 쓴다).
+    let mut of_residuals: Vec<usize> = Vec::new();
     let (mut of_corrected, mut of_damaged, mut of_before_wrong, mut of_after_wrong) =
         (0usize, 0usize, 0usize, 0usize);
     // 선택 계층(시도 206): 게이트가 쌍당 결정 하나 — 덮개 요구가 없다
@@ -789,6 +790,7 @@ fn main() {
                             of_damaged += prof.damaged;
                             of_before_wrong += prof.before_wrong;
                             of_after_wrong += prof.after_wrong;
+                            of_residuals.push(prof.after_wrong);
                         }
                     }
                 }
@@ -832,6 +834,7 @@ fn main() {
                                 of_damaged += prof.damaged;
                                 of_before_wrong += prof.before_wrong;
                                 of_after_wrong += prof.after_wrong;
+                                of_residuals.push(prof.after_wrong);
                             }
                         }
                     }
@@ -886,6 +889,7 @@ fn main() {
                             of_damaged += prof.damaged;
                             of_before_wrong += prof.before_wrong;
                             of_after_wrong += prof.after_wrong;
+                            of_residuals.push(prof.after_wrong);
                         }
                     } else {
                         // 합성 경로는 **부분 기술 과제에도** 적용한다(시도 190):
@@ -1166,6 +1170,12 @@ fn main() {
                     "미수정이 우세 — 규칙이 닿지 못한 곳이 더 많다(덮개)"
                 }
             );
+            // **근접 실패가 있는가**: 남은 오답이 한두 칸인 시험쌍이 있다면 그것은
+            // 표현이 소진됐다는 결론과 다른 이야기다. 과제 이름은 적지 않는다 —
+            // 분포만 본다(봉인 규율).
+            let mut rs = of_residuals.clone();
+            rs.sort_unstable();
+            println!("    시험쌍별 남은 오답 칸수(정렬): {rs:?}");
         }
         if !monad_names.is_empty() {
             println!("\n  MONAD_DERIVED 해결 과제(각각 자기 기여분은 배제됨):");

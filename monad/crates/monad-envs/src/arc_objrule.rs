@@ -1214,6 +1214,8 @@ fn select_from_sites(lib: &Library, sites: &[Site]) -> Vec<(Vec<Term>, Term, Ter
     if sites.is_empty() {
         return Vec::new();
     }
+    // 루프 밖에서 한 번만 읽는다 — 항목마다 읽으면 8만×294회 시스템 호출이 된다.
+    let vacuous = std::env::var("MONAD_ARC_VACUOUS").is_ok();
     let mut kept = Vec::new();
     for e in lib.by_prior() {
         let Some((cond, kind, param)) = split_orule(&lib.entries[e].schema) else { continue };
@@ -1229,7 +1231,19 @@ fn select_from_sites(lib: &Library, sites: &[Site]) -> Vec<(Vec<Term>, Term, Ter
                 useful = true;
             }
         }
-        if consistent && useful {
+        // `useful`은 "이 규칙이 훈련 지점 중 델타가 있는 곳에서 **발화했는가**"다.
+        // 그래서 **훈련에서 한 번도 발화하지 않는 규칙은 버려진다.**
+        //
+        // 시도 211의 계량이 이 조항을 문제로 지목했다: 게이트를 통과하고도 틀린
+        // 시험쌍의 남은 오답이 [4, 4, 19]칸이고, 잔여의 주성분은 **미수정**이다.
+        // 훈련에 없던 객체형이 시험 입력에 나오면 그것을 다룰 줄 아는 라이브러리
+        // 규칙이 있어도 — 다른 과제에서 배운 바로 그 규칙이 — 훈련에서 발화하지
+        // 않는다는 이유로 선택에서 빠진다. 전이의 존재 이유를 선택기가 막는 셈이다.
+        //
+        // 발화하지 않는 규칙은 훈련을 **모순시킬 수 없으므로**(공허하게 일관)
+        // 게이트(훈련 정확 재현)를 깨뜨리지 않는다. 다만 시험에서 발화해 망칠 수는
+        // 있다 — 그래서 기본값은 그대로 두고 환경변수로만 연다.
+        if consistent && (useful || vacuous) {
             kept.push((cond.clone(), kind.clone(), param.clone()));
         }
     }
