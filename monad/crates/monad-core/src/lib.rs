@@ -33,6 +33,8 @@ pub mod schema;
 pub mod sleep;
 pub mod store;
 pub mod wake;
+/// GEN4 세계모델 — 예측·오차·수정, 그리고 **모른다고 말하는 능력**.
+pub mod world;
 
 pub use abstraction::{generalize, lgg, Abstraction, Library, Provenance, Term};
 pub use constraint::{Budget, Constraints, Cost, Domain, Growth, OpSpec, Violation};
