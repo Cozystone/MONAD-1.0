@@ -764,11 +764,27 @@ fn main() {
                 // 원리상 구분 못 하는 자리(홀드아웃의 58%)를 노린다.
                 if ops.is_none() {
                     let sel = monad_envs::arc_relrule::select_rel_consistent(rel_view, &train);
+                    // **유지 보호막**(시도 217): 이 과제의 훈련쌍에서 한 번도
+                    // 바뀌지 않은 성질의 객체는 시험에서도 건드리지 않는다.
+                    // 시도 216에서 다른 과제의 유지 규칙은 그 객체를 못 덮었지만,
+                    // **이 과제의 훈련쌍 자체가** 직접 증거를 갖고 있다.
+                    // 훈련쌍은 주어진 것이므로 정답을 엿보는 것이 아니다.
+                    let kg: Vec<[u64; monad_envs::arc_objrule::NPROPS]> =
+                        if std::env::var("MONAD_ARC_KEEPGUARD").is_ok() {
+                            monad_envs::arc_relrule::keep_props_from_train(&train)
+                        } else {
+                            Vec::new()
+                        };
+                    let predict = |g: &monad_envs::grid::Grid| {
+                        if kg.is_empty() {
+                            monad_envs::arc_relrule::apply_rel_rules(&sel, g)
+                        } else {
+                            monad_envs::arc_relrule::apply_rel_rules_keepguard(&sel, g, &kg)
+                        }
+                    };
                     if monad_envs::arc_relrule::rel_rules_reproduce(&sel, &train) {
                         rel_gate_pass += 1;
-                        let all_ok = task.test.iter().all(|p| {
-                            monad_envs::arc_relrule::apply_rel_rules(&sel, &p.input) == p.output
-                        });
+                        let all_ok = task.test.iter().all(|p| predict(&p.input) == p.output);
                         if all_ok {
                             rel_solved += 1;
                             reuse_solved += 1;
@@ -778,7 +794,7 @@ fn main() {
                             continue;
                         }
                         for p in &task.test {
-                            let pred = monad_envs::arc_relrule::apply_rel_rules(&sel, &p.input);
+                            let pred = predict(&p.input);
                             if pred == p.input {
                                 of_silent += 1;
                             } else {

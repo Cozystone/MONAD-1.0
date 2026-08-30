@@ -259,6 +259,19 @@ fn build(self_cond: Vec<Term>, rel: u64, target_cond: Vec<Term>, kind: u64, para
 /// 그 등식이 속성 벡터가 담지 못하는 관계 정보다.
 pub fn sleep_rel_drop(per_task: &[(String, Vec<RSite>)], lib: &mut Library) -> (usize, usize) {
     let (mut tried, mut added) = (0usize, 0usize);
+    // **유지도 증거다**(시도 216). 지금까지 `delta == None`인 객체(=바뀌지 않은
+    // 객체)는 씨앗에서 통째로 빠졌다("규칙으로 쓸 것이 없다"). 시도 215가 그
+    // 대가를 드러냈다: 근접 실패에서 옳은 행동은 **"이 객체를 건드리지 않는 것"**
+    // 인데, 부작위를 말하는 규칙이 없으니 훈련과 모순 없는 다른 규칙이 그 객체를
+    // 덮어써도 반증할 길이 없었다.
+    //
+    // 새 연산은 필요 없다 — `action_ok`는 이미 `delta == None`을 **"자기 색으로
+    // 재색"**으로 취급한다. 즉 유지는 이 규칙 형태 안에서 이미 표현 가능했고,
+    // 수면이 씨앗으로 삼지 않았을 뿐이다. 버려지던 증거를 줍는 것이다.
+    //
+    // 그러면 유지 규칙과 변경 규칙이 같은 객체에서 갈릴 수 있고, 그때는
+    // 시도 215의 기권 규율(`MONAD_ARC_ABSTAIN`)이 "그대로 두라"로 판정한다.
+    let keep = std::env::var("MONAD_ARC_KEEP").is_ok();
     for (task_name, sites) in per_task {
         lib.minting = vec![task_name.clone()];
         for seed in sites {
@@ -267,7 +280,11 @@ pub fn sleep_rel_drop(per_task: &[(String, Vec<RSite>)], lib: &mut Library) -> (
                 Some(10) => acts.push((ACT_DELETE, 0)),
                 Some(v) if v >= MOVE_BASE => acts.push((3, v)),
                 Some(c) => acts.push((ACT_RECOLOR, c)),
-                None => {}
+                None => {
+                    if keep {
+                        acts.push((ACT_RECOLOR, seed.props[0]));
+                    }
+                }
             }
             if acts.is_empty() {
                 continue;
@@ -450,6 +467,70 @@ pub fn select_rel_consistent(lib: &Library, train: &[(Grid, Grid)]) -> Vec<RelRu
 }
 
 /// 선택 규칙 적용(첫 발화 승, 나머지는 유지).
+/// 이 과제의 **훈련쌍에서 한 번도 바뀌지 않은** 객체들의 성질 벡터.
+///
+/// 시도 216에서 다른 과제의 유지 규칙을 배워 봤지만 근접 실패의 그 객체를 덮는
+/// 규칙은 없었다. 그런데 **이 과제의 훈련쌍 자체가** 직접적인 증거를 갖고 있다 —
+/// "이런 성질의 객체는 그대로 둔다". 훈련쌍은 주어진 것이므로 이것을 쓰는 것은
+/// 정답을 엿보는 것이 아니다(시험 출력은 건드리지 않는다).
+///
+/// 어느 훈련쌍에서든 **한 번이라도 바뀌었다면** 그 벡터는 보호하지 않는다 —
+/// 증거가 갈리는 자리에서 침묵을 강제하면 고쳐야 할 것도 못 고친다.
+pub fn keep_props_from_train(train: &[(Grid, Grid)]) -> Vec<[u64; NPROPS]> {
+    let sites = task_rsites(train);
+    let mut changed: Vec<[u64; NPROPS]> = Vec::new();
+    let mut kept: Vec<[u64; NPROPS]> = Vec::new();
+    for s in &sites {
+        if s.delta.is_some() || !s.copies.is_empty() {
+            changed.push(s.props);
+        } else {
+            kept.push(s.props);
+        }
+    }
+    kept.retain(|p| !changed.contains(p));
+    kept.sort_unstable();
+    kept.dedup();
+    kept
+}
+
+/// 유지 증거로 보호하며 적용한다. 훈련에서 늘 그대로였던 성질의 객체는
+/// 어떤 규칙이 발화해도 건드리지 않는다.
+///
+/// 게이트(훈련 정확 재현)에는 영향이 없다: 보호되는 벡터는 훈련에서 바뀐 적이
+/// 없고, 선택된 규칙은 훈련과 모순되지 않으므로 그 자리에서 이미 아무 일도
+/// 하지 않았다. 즉 이 보호막은 **시험에서만** 작동한다.
+pub fn apply_rel_rules_keepguard(
+    rules: &[RelRule],
+    g: &Grid,
+    keep: &[[u64; NPROPS]],
+) -> Grid {
+    let objs = components_bg(g, false, 0);
+    let sites = grid_sites(g);
+    let mut out = g.clone();
+    for (o, s) in objs.iter().zip(sites.iter()) {
+        if keep.binary_search(&s.props).is_ok() {
+            continue;
+        }
+        for (sc, r, tc, kind, param) in rules {
+            let Some((k, val)) = relrule_fire(sc, *r, tc, kind, param, s) else { continue };
+            let paint = match k {
+                ACT_DELETE => 0u8,
+                ACT_RECOLOR if val <= 9 => val as u8,
+                _ => continue,
+            };
+            for dy in 0..o.h {
+                for dx in 0..o.w {
+                    if o.mask[dy * o.w + dx] {
+                        out.set(o.x0 + dx, o.y0 + dy, paint);
+                    }
+                }
+            }
+            break;
+        }
+    }
+    out
+}
+
 pub fn apply_rel_rules(rules: &[RelRule], g: &Grid) -> Grid {
     let objs = components_bg(g, false, 0);
     let sites = grid_sites(g);
