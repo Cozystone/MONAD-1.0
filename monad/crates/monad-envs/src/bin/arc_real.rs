@@ -82,7 +82,10 @@ fn main() {
     //   남은 오답     틀린 셀을 못 고쳤다        → 덮개 부족(일반성 부족)
     // 둘의 비가 다음 개입의 방향을 정한다. 시험 출력은 **집계에만** 쓰고 선택에
     // 되먹이지 않는다(각성은 이미 채점에 같은 값을 쓴다).
-    let mut of_residuals: Vec<usize> = Vec::new();
+    // **시험쌍마다** (게이트, 고침, 망침, 미수정). 총량 [4,4,19]만으로는 4칸짜리
+    // 근접 실패가 **과발화 4칸**인지 **미수정 4칸**인지 알 수 없고, 둘의 처방은
+    // 정반대다(시도 214).
+    let mut of_residuals: Vec<(&'static str, usize, usize, usize)> = Vec::new();
     let (mut of_corrected, mut of_damaged, mut of_before_wrong, mut of_after_wrong) =
         (0usize, 0usize, 0usize, 0usize);
     // 선택 계층(시도 206): 게이트가 쌍당 결정 하나 — 덮개 요구가 없다
@@ -790,7 +793,12 @@ fn main() {
                             of_damaged += prof.damaged;
                             of_before_wrong += prof.before_wrong;
                             of_after_wrong += prof.after_wrong;
-                            of_residuals.push(prof.after_wrong);
+                            of_residuals.push((
+                                "관계",
+                                prof.corrected,
+                                prof.damaged,
+                                prof.after_wrong.saturating_sub(prof.damaged),
+                            ));
                         }
                     }
                 }
@@ -834,7 +842,12 @@ fn main() {
                                 of_damaged += prof.damaged;
                                 of_before_wrong += prof.before_wrong;
                                 of_after_wrong += prof.after_wrong;
-                                of_residuals.push(prof.after_wrong);
+                                of_residuals.push((
+                                    "결합",
+                                    prof.corrected,
+                                    prof.damaged,
+                                    prof.after_wrong.saturating_sub(prof.damaged),
+                                ));
                             }
                         }
                     }
@@ -842,11 +855,25 @@ fn main() {
                 // **객체 델타 규칙 전이**(시도 166): 승자 표현 위의 성질 조건 규칙.
                 // 같은 오염 차단 규율 — 이 과제가 낳은 항목은 시야에서 빠진다.
                 if ops.is_none() {
-                    let mut sel = monad_envs::arc_objrule::select_obj_consistent(obj_view, &train);
-                    // 단독 일관성으로 재현하지 못하면 **결정 목록**으로 다시 고른다
+                    // 기본은 **일관된 규칙 전부**를 고른다. 그러면 시험에서 많이
+                    // 발화해 망칠 여지가 커진다 — 시도 210의 망침 8칸이 그것이다.
+                    // `MONAD_ARC_MINCOVER=1`은 순서를 뒤집어 **최소 덮개**를 먼저
+                    // 쓴다(규칙 수가 적을수록 과발화가 준다). 어느 쪽이 옳은지는
+                    // 근접 실패가 과발화형인지 미수정형인지에 달렸다(시도 214).
+                    let mincover = std::env::var("MONAD_ARC_MINCOVER").is_ok();
+                    let mut sel = if mincover {
+                        monad_envs::arc_objrule::select_obj_cover(obj_view, &train, 24)
+                    } else {
+                        monad_envs::arc_objrule::select_obj_consistent(obj_view, &train)
+                    };
+                    // 첫 선택이 재현하지 못하면 다른 쪽으로 다시 고른다
                     // (예외 우선 + 일반 후속 — 진단이 지목한 미발화 58%의 처방)
                     if !monad_envs::arc_objrule::obj_rules_reproduce(&sel, &train) {
-                        sel = monad_envs::arc_objrule::select_obj_cover(&obj_view, &train, 24);
+                        sel = if mincover {
+                            monad_envs::arc_objrule::select_obj_consistent(obj_view, &train)
+                        } else {
+                            monad_envs::arc_objrule::select_obj_cover(obj_view, &train, 24)
+                        };
                     }
                     // **반복 적용**(시도 191): 규칙이 한 번 적용되면 객체의 성질이
                     // 바뀌어 다른 규칙이 발화한다. 재현되는 **최소 깊이**를 찾는다
@@ -889,7 +916,12 @@ fn main() {
                             of_damaged += prof.damaged;
                             of_before_wrong += prof.before_wrong;
                             of_after_wrong += prof.after_wrong;
-                            of_residuals.push(prof.after_wrong);
+                            of_residuals.push((
+                                "객체",
+                                prof.corrected,
+                                prof.damaged,
+                                prof.after_wrong.saturating_sub(prof.damaged),
+                            ));
                         }
                     } else {
                         // 합성 경로는 **부분 기술 과제에도** 적용한다(시도 190):
@@ -1174,8 +1206,14 @@ fn main() {
             // 표현이 소진됐다는 결론과 다른 이야기다. 과제 이름은 적지 않는다 —
             // 분포만 본다(봉인 규율).
             let mut rs = of_residuals.clone();
-            rs.sort_unstable();
-            println!("    시험쌍별 남은 오답 칸수(정렬): {rs:?}");
+            rs.sort_by_key(|(_, _, d, u)| d + u);
+            println!("    시험쌍별 잔여 분해 (게이트 · 고침 · 망침 · 미수정):");
+            for (g, c, d, u) in &rs {
+                println!(
+                    "      {g}: 고침 {c} · 망침 {d} · 미수정 {u} → 남은 오답 {}",
+                    d + u
+                );
+            }
         }
         if !monad_names.is_empty() {
             println!("\n  MONAD_DERIVED 해결 과제(각각 자기 기여분은 배제됨):");

@@ -454,7 +454,29 @@ pub fn apply_rel_rules(rules: &[RelRule], g: &Grid) -> Grid {
     let objs = components_bg(g, false, 0);
     let sites = grid_sites(g);
     let mut out = g.clone();
+    // **모호하면 답하지 않는다**(시도 215). 기본 정책은 "먼저 맞는 규칙이 이긴다"
+    // 인데, 그러면 서로 다른 행동을 말하는 규칙들이 있어도 순서가 임의로 승자를
+    // 정한다. 시도 214의 계량이 이 자리를 지목했다: 근접 실패의 잔여는
+    // **망침 4 · 미수정 0**이었다 — 고쳐야 할 곳은 전부 고쳤고, 건드리지 말았어야
+    // 할 곳 4칸만 건드렸다. 그 4칸을 건드리지 않으면 정확 일치다.
+    //
+    // 이 규율은 이 저장소에 이미 있다(`arc_select::apply_sel_rules`는 정확히 하나가
+    // 발화할 때만 답한다). 관계 계층에만 빠져 있었다.
+    let abstain = std::env::var("MONAD_ARC_ABSTAIN").is_ok();
     for (o, s) in objs.iter().zip(sites.iter()) {
+        if abstain {
+            // 발화한 규칙들이 **서로 다른 행동**을 말하면 이 객체는 건드리지 않는다.
+            let mut acts = rules
+                .iter()
+                .filter_map(|(sc, r, tc, kind, param)| {
+                    relrule_fire(sc, *r, tc, kind, param, s)
+                });
+            if let Some(first) = acts.next() {
+                if acts.any(|a| a != first) {
+                    continue;
+                }
+            }
+        }
         for (sc, r, tc, kind, param) in rules {
             let Some((k, val)) = relrule_fire(sc, *r, tc, kind, param, s) else { continue };
             let paint = match k {
@@ -522,7 +544,21 @@ pub fn apply_combined(
     let props = object_props(g, &objs);
     let sites = grid_sites(g);
     let mut out = g.clone();
+    // 결합 경로도 같은 규율을 따른다(시도 215) — 속성·관계 양쪽에서 발화한
+    // 행동이 하나로 모이지 않으면 건드리지 않는다.
+    let abstain = std::env::var("MONAD_ARC_ABSTAIN").is_ok();
     for (ix, o) in objs.iter().enumerate() {
+        if abstain {
+            let mut acts = obj_rules
+                .iter()
+                .filter_map(|r| crate::arc_objrule::obj_rule_action(r, &props[ix]))
+                .chain(rel_rules.iter().filter_map(|r| rel_rule_action(r, &sites[ix])));
+            if let Some(first) = acts.next() {
+                if acts.any(|a| a != first) {
+                    continue;
+                }
+            }
+        }
         let act = obj_rules
             .iter()
             .find_map(|r| crate::arc_objrule::obj_rule_action(r, &props[ix]))
