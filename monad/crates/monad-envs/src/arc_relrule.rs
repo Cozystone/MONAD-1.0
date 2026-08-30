@@ -493,6 +493,55 @@ pub fn keep_props_from_train(train: &[(Grid, Grid)]) -> Vec<[u64; NPROPS]> {
     kept
 }
 
+/// 이 과제의 훈련쌍에 **나타난 적 있는** 객체 성질 벡터 전부(바뀐 것·안 바뀐 것 모두).
+///
+/// 시도 217은 "훈련에서 **늘 그대로**였던" 벡터를 보호했다. 그런데 시도 215~217의
+/// 진단이 가리킨 객체는 훈련에 **아예 나타난 적이 없는** 종류였다 — 보호 목록에
+/// 없으니 그대로 통과해 망가졌다. 필요한 것은 그 여집합이다:
+/// **아는 종류에만 손대고, 모르는 종류에는 침묵한다.**
+pub fn attested_props_from_train(train: &[(Grid, Grid)]) -> Vec<[u64; NPROPS]> {
+    let mut v: Vec<[u64; NPROPS]> = task_rsites(train).iter().map(|s| s.props).collect();
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
+/// **외삽 금지**: 훈련에서 본 적 없는 성질의 객체에는 어떤 규칙도 적용하지 않는다.
+///
+/// 게이트(훈련 정확 재현)에는 영향이 없다 — 훈련 객체는 정의상 전부 attested다.
+/// 이 보호막도 **시험에서만** 작동한다.
+pub fn apply_rel_rules_attested(
+    rules: &[RelRule],
+    g: &Grid,
+    attested: &[[u64; NPROPS]],
+) -> Grid {
+    let objs = components_bg(g, false, 0);
+    let sites = grid_sites(g);
+    let mut out = g.clone();
+    for (o, s) in objs.iter().zip(sites.iter()) {
+        if attested.binary_search(&s.props).is_err() {
+            continue; // 모르는 종류 — 침묵한다
+        }
+        for (sc, r, tc, kind, param) in rules {
+            let Some((k, val)) = relrule_fire(sc, *r, tc, kind, param, s) else { continue };
+            let paint = match k {
+                ACT_DELETE => 0u8,
+                ACT_RECOLOR if val <= 9 => val as u8,
+                _ => continue,
+            };
+            for dy in 0..o.h {
+                for dx in 0..o.w {
+                    if o.mask[dy * o.w + dx] {
+                        out.set(o.x0 + dx, o.y0 + dy, paint);
+                    }
+                }
+            }
+            break;
+        }
+    }
+    out
+}
+
 /// 유지 증거로 보호하며 적용한다. 훈련에서 늘 그대로였던 성질의 객체는
 /// 어떤 규칙이 발화해도 건드리지 않는다.
 ///

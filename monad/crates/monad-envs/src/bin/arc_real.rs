@@ -775,11 +775,21 @@ fn main() {
                         } else {
                             Vec::new()
                         };
-                    let predict = |g: &monad_envs::grid::Grid| {
-                        if kg.is_empty() {
-                            monad_envs::arc_relrule::apply_rel_rules(&sel, g)
+                    // **외삽 금지**(시도 218): 훈련에 나타난 적 없는 종류의 객체에는
+                    // 손대지 않는다. 시도 215~217이 지목한 그 객체가 정확히 이 경우다.
+                    let att: Vec<[u64; monad_envs::arc_objrule::NPROPS]> =
+                        if std::env::var("MONAD_ARC_ATTESTED").is_ok() {
+                            monad_envs::arc_relrule::attested_props_from_train(&train)
                         } else {
+                            Vec::new()
+                        };
+                    let predict = |g: &monad_envs::grid::Grid| {
+                        if !att.is_empty() {
+                            monad_envs::arc_relrule::apply_rel_rules_attested(&sel, g, &att)
+                        } else if !kg.is_empty() {
                             monad_envs::arc_relrule::apply_rel_rules_keepguard(&sel, g, &kg)
+                        } else {
+                            monad_envs::arc_relrule::apply_rel_rules(&sel, g)
                         }
                     };
                     if monad_envs::arc_relrule::rel_rules_reproduce(&sel, &train) {
